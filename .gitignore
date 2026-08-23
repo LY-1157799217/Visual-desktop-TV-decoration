@@ -1,0 +1,23 @@
+# Build and local tooling
+.pio/
+.vscode/
+__pycache__/
+*.py[cod]
+
+# Firmware/build artifacts
+*.bin
+*.elf
+*.map
+*.hex
+*.log
+
+# Local secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+secrets.*
+credentials.*
+
+# Local serial/device exports
+*.dump
+*.bak
