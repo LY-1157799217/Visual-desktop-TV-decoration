@@ -1,6 +1,6 @@
-# stock-tv — 太空人小电视(ESP32-C3)A股/基金行情屏改造
+# stock-tv — 桌面小电视(ESP32-C3)A股/基金实时行情屏显
 
-原厂固件只能显示单只股票;本项目替换为**多股/基金轮播**行情屏。
+深度支持**多股/基金轮播+自定义昵称**行情屏。
 数据链路:`腾讯行情 + 天天基金 → PC daemon(JSON) → 设备轮播显示`
 
 ```
@@ -24,17 +24,6 @@ stock-tv/
 | BL | 1 | AO3401 P-MOS,**低电平点亮** |
 | CS | — | 屏端接地,固定选中 |
 | USB | 18/19 | 原生USB,Type-C直刷 |
-
-## 第零步:备份原厂固件(必做,只需一次)
-
-```bash
-pip install esptool
-# 插上USB-C，在设备管理器确认实际串口号并替换 PORT
-python -m esptool --chip esp32c3 --port PORT read_flash 0x0 0x400000 stock-backup-factory.bin
-
-```
-
-恢复出厂：`python -m esptool --chip esp32c3 --port PORT write_flash 0x0 stock-backup-factory.bin`
 
 ## 第一步:跑起数据端 daemon
 
@@ -78,7 +67,7 @@ pio device monitor              # 看串口日志(115200)
 
 ## 路线图
 
-- [x] v0.1 多股轮播 + 现价/涨跌幅/分时走势 + 轮播指示点(本版)
+- [ ] v0.1 多股轮播 + 现价/涨跌幅/分时走势 + 轮播指示点(本版)
 - [ ] v0.2 AP配网(免改代码配WiFi)+ Web页管理自选股
 - [ ] v0.3 中文字库(显示股票中文名)
 - [ ] v0.4 到价提醒(满屏变色闪烁)+ 夜间自动降亮度
