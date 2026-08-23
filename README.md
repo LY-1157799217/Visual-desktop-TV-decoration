@@ -74,22 +74,22 @@ pio device monitor              # 看串口日志(115200)
 
 ## 实物展示
 ### 默认时钟界面
-![默认时钟](./assets/Default clock.jpg)
+![默认时钟](./assets/Default_clock.jpg)
 
 ### 自定义时钟
-![自定义时钟](./assets/DIY clock.jpg)
+![自定义时钟](./assets/DIY_clock.jpg)
 
 ### 图片显示功能
-![图片显示](./assets/Image display.jpg)
+![图片显示](./assets/Image_display.jpg)
 
 ### 股票行情界面
-![股票展示](./assets/Stock display.jpg)
+![股票展示](./assets/Stock_display.jpg)
 
 ### 股票设置页面
-![股票设置](./assets/Stock settings.jpg)
+![股票设置](./assets/Stock_settings.jpg)
 
 ### 天气界面
-![天气展示](./assets/Weather display.jpg)
+![天气展示](./assets/Weather_display.jpg)
 
 ### Web配置+总控台
 ![网页控制台](./assets/Web.jpg)
