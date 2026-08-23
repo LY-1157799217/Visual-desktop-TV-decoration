@@ -13,7 +13,7 @@ stock-tv/
     └── app.py
 ```
 
-## 硬件引脚(依据 C3天气预报电路图.pdf,已写入 platformio.ini)
+## 第零步:确定硬件引脚(依据 C3天气预报电路图.pdf,已写入 platformio.ini)
 
 | 信号 | GPIO | 备注 |
 |---|---|---|
@@ -71,3 +71,25 @@ pio device monitor              # 看串口日志(115200)
 - [ ] v0.2 AP配网(免改代码配WiFi)+ Web页管理自选股
 - [ ] v0.3 中文字库(显示股票中文名)
 - [ ] v0.4 到价提醒(满屏变色闪烁)+ 夜间自动降亮度
+
+## 实物展示
+### 默认时钟界面
+![默认时钟](./assets/Default clock.jpg)
+
+### 自定义时钟
+![自定义时钟](./assets/DIY clock.jpg)
+
+### 图片显示功能
+![图片显示](./assets/Image display.jpg)
+
+### 股票行情界面
+![股票展示](./assets/Stock display.jpg)
+
+### 股票设置页面
+![股票设置](./assets/Stock settings.jpg)
+
+### 天气界面
+![天气展示](./assets/Weather display.jpg)
+
+### Web配置+总控台
+![网页控制台](./assets/Web.jpg)
