@@ -37,7 +37,7 @@ stock-tv/
     └── app.py
 ```
 
-## 第零步:确定硬件引脚(依据 C3天气预报电路图.pdf,已写入 platformio.ini)
+## 第零步:确定硬件引脚(可参考ESP32‑C3公开电路图,具体以本仓库表格与platformio.ini 为准)
 
 | 信号 | GPIO | 备注 |
 |---|---|---|
