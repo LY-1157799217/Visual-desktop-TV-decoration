@@ -1,7 +1,7 @@
 # ============================================================
 # stock-tv webhook daemon
 # 聚合 腾讯行情(股票/指数/分时) + 天天基金(场外基金估值)
-# 输出设备端约定的极简 JSON,局域网纯 HTTP,无鉴权
+# 输出设备端约定的极简 JSON,目前局域网纯 HTTP,无鉴权，如果上游支持 HTTPS，可以改用 HTTPS。
 #
 # 运行:  pip install -r requirements.txt
 #        python app.py            (默认 0.0.0.0:8899)
@@ -86,7 +86,7 @@ def fetch_spark(symbol, points):
 
 
 # ---------------- 场外基金: 东财官方净值(每日盘后更新) ----------------
-# 注: 盘中估值接口(fundgz)已于2024年被监管叫停,全网失效。
+# 注: 盘中估值接口(fundgz)已于2024年被监管叫停,现已失效。
 # 场外基金只能拿到最新官方净值+日涨幅;要盘中实时请改用场内ETF(如 sh510300)。
 # http://api.fund.eastmoney.com/f10/lsjz?fundCode=005827&pageIndex=1&pageSize=1
 FUND_TTL = 1800  # 净值每日只更新一次,缓存30分钟
@@ -124,9 +124,24 @@ def fetch_fund(code):
 @app.route("/quote")
 def quote():
     symbol = request.args.get("symbol", "").strip()
-    points = int(request.args.get("points", 48))
+
+    try:
+        points = int(request.args.get("points", "48"))
+    except (TypeError, ValueError):
+        return jsonify({
+            "ok": False,
+            "err": "points must be an integer"
+        }), 400
+
+    if not 1 <= points <= 240:
+        return jsonify({
+            "ok": False,
+            "err": "points must be between 1 and 240"
+        }), 400
+
     if not symbol:
         return jsonify({"ok": False, "err": "no symbol"}), 400
+
     try:
         if symbol.startswith("f") and symbol[1:].isdigit():
             data = fetch_fund(symbol[1:])
@@ -138,8 +153,10 @@ def quote():
                 data["spark"] = fetch_spark(symbol, points)
     except Exception as e:
         return jsonify({"ok": False, "err": str(e)}), 502
+
     if not data:
         return jsonify({"ok": False, "err": "not found"}), 404
+
     return jsonify(data)
 
 
