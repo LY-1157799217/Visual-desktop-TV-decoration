@@ -1,5 +1,7 @@
 **License: Apache‑2.0**
+> 主仓库[GitHub](https://github.com/LY-1157799217/Visual-desktop-TV-decoration)
 > 国内镜像访问：[Gitee](https://gitee.com/LY115LY/Visual-desktop-TV-decoration)
+> 两个仓库保持同步更新，国内访问建议使用Gitee镜像。
 
 > 基于ESP32‑C3的桌面信息TV摆件，内网Web控制器；实现自定义静态/动态壁纸、实时时钟、城市天气、A股多股票分时/K线轮播。ESP32 设备只与局域网内的 PC daemon 通信；daemon 会访问腾讯行情和东方财富等第三方公开数据接口。设备配置和自定义图片默认不上传至项目作者的服务器。
 
