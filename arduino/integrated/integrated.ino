@@ -38,13 +38,13 @@ Mode currentMode = MODE_CLOCK;
 
 // ---------------- 配置 ----------------
 String cityCode        = "101120301";
+String cityLabel       = "Zi Bo";     // 城市显示名称(拼音,可配置)
 String stockCode       = "sh600519";
 int    brightness      = 50;
 int    defaultMode     = 0;
 int    refreshInterval = 5;
 int    wallpaperMode   = 1;   // 壁纸模式: 0无 1静态 2动态
 int    wallpaperIndex  = 0;   // 静态壁纸索引(0-2)
-const char* CITY_NAME  = "Zi Bo";   // 城市拼音(暂固定淄博)
 
 struct tm timeinfo;
 
@@ -109,6 +109,7 @@ unsigned long lastRotate = 0;
 // ---------------- 工具函数 ----------------
 void loadConfig() {
   cityCode        = prefs.getString("cityCode", "101120301");
+  cityLabel       = prefs.getString("cityLabel", "Zi Bo");
   stockCode       = prefs.getString("stockCode", "sh600519");
   brightness      = prefs.getInt("brightness", 50);
   defaultMode     = prefs.getInt("defaultMode", 0);
@@ -120,6 +121,35 @@ void loadConfig() {
 void setBacklight() {
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, LOW);
+}
+
+// SPIFFS 启动清理(删除不在白名单的文件，保持存储干净)
+void cleanupSPIFFS() {
+  // 白名单：有效文件
+  const char* VALID_FILES[] = {
+    "/1.jpg", "/2.jpg", "/3.jpg",  // 相册3张
+    "/m.jpg",                       // 网页壁纸
+    "/city_data.json"               // 城市数据
+  };
+
+  // 遍历可能存在的旧文件并删除（直接尝试删除法，避免遍历API问题）
+  const char* OLD_FILES[] = {
+    "/4.jpg", "/5.jpg", "/6.jpg", "/7.jpg", "/8.jpg",  // 旧版相册残留
+    "/test.jpg", "/temp.jpg", "/backup.jpg"             // 可能的测试文件
+  };
+
+  Serial.println("开始清理SPIFFS...");
+  int deleted = 0;
+
+  for (int i = 0; i < sizeof(OLD_FILES) / sizeof(OLD_FILES[0]); i++) {
+    if (SPIFFS.exists(OLD_FILES[i])) {
+      Serial.println("删除无用文件: " + String(OLD_FILES[i]));
+      SPIFFS.remove(OLD_FILES[i]);
+      deleted++;
+    }
+  }
+
+  Serial.println("清理完成，删除了 " + String(deleted) + " 个文件");
 }
 
 // TFT输出回调(JPEG解码块推屏)
@@ -287,7 +317,29 @@ void handleRoot() {
   html += "<a href='/set?stockview=1'><button>日K图</button></a>";
   html += "</div><div class='sub'>当前视图: " + String(stockView == 0 ? "分时图" : "日K图") + "</div></details>";
 
-  html += "<p class='center' style='margin-top:16px'><a href='/upload' style='color:#9ab'>上传图片…</a> &middot; <a href='/stock_edit' style='color:#9ab'>更换股票…</a></p>";
+  // 天气城市切换(点击展开)
+  html += "<details class='card'><summary>天气城市</summary>";
+  html += "<div class='sub' style='margin-bottom:8px'>当前: <b>" + cityLabel + "</b> (" + cityCode + ") <a href='/city_list' style='color:#38bdf8'>[查询城市代码]</a></div>";
+  html += "<div class='grid'>";
+  html += "<a href='/set?city=101010100&label=Beijing'><button>北京</button></a>";
+  html += "<a href='/set?city=101020100&label=Shanghai'><button>上海</button></a>";
+  html += "<a href='/set?city=101280101&label=Guangzhou'><button>广州</button></a>";
+  html += "<a href='/set?city=101280601&label=Shenzhen'><button>深圳</button></a>";
+  html += "<a href='/set?city=101210101&label=Hangzhou'><button>杭州</button></a>";
+  html += "<a href='/set?city=101270101&label=Chengdu'><button>成都</button></a>";
+  html += "<a href='/set?city=101110101&label=Xian'><button>西安</button></a>";
+  html += "<a href='/set?city=101200101&label=Wuhan'><button>武汉</button></a>";
+  html += "<a href='/set?city=101281601&label=Zi Bo'><button>淄博</button></a>";
+  html += "<a href='/set?city=101120101&label=Jinan'><button>济南</button></a>";
+  html += "</div>";
+  html += "<form action='/set' method='GET' style='margin-top:12px'>";
+  html += "<input type='text' name='city' placeholder='城市代码(如101210101)' style='width:calc(50% - 6px);padding:10px;border:1px solid #456;border-radius:6px;background:#0f3460;color:#eee;font-size:14px;box-sizing:border-box'>";
+  html += "<input type='text' name='label' placeholder='城市名称(拼音)' style='width:calc(50% - 6px);padding:10px;margin-left:4px;border:1px solid #456;border-radius:6px;background:#0f3460;color:#eee;font-size:14px;box-sizing:border-box'>";
+  html += "<button type='submit' style='width:100%;margin-top:8px'>切换</button>";
+  html += "</form>";
+  html += "</details>";
+
+  html += "<p class='center' style='margin-top:16px'><a href='/upload' style='color:#9ab'>上传图片...</a> &middot; <a href='/stock_edit' style='color:#9ab'>更换股票...</a> &middot; <a href='/spiffs_list' style='color:#9ab'>SPIFFS文件列表</a></p>";
 
   // WiFi 管理折叠区（警告色）
   html += "<details class='card' style='background:rgba(120,30,30,.85);border:1px solid #f87171;margin-top:20px'>";
@@ -329,6 +381,33 @@ void handleSet() {
       }
       server.send(200, "text/html; charset=utf-8",
                   "壁纸已设置  <a href='/'>返回</a>");
+      return;
+    }
+  }
+  // 切换城市
+  if (server.hasArg("city")) {
+    String newCity = server.arg("city");
+    String newLabel = server.hasArg("label") ? server.arg("label") : "";
+    newCity.trim();
+    newLabel.trim();
+    if (newCity.length() >= 6 && newCity.length() <= 12) {  // 城市代码一般9位
+      cityCode = newCity;
+      prefs.putString("cityCode", cityCode);
+      // 如果有label参数，保存label；否则保持旧label
+      if (newLabel.length() > 0) {
+        cityLabel = newLabel;
+        prefs.putString("cityLabel", cityLabel);
+      }
+      w.ok = false;  // 强制重新抓取天气
+      if (currentMode == MODE_WEATHER) {
+        renderWeather();  // 立即刷新天气显示
+      }
+      server.send(200, "text/html; charset=utf-8",
+                  "城市已切换到 <b>" + cityLabel + "</b> (" + cityCode + ")  <a href='/'>返回</a>");
+      return;
+    } else {
+      server.send(400, "text/html; charset=utf-8",
+                  "城市代码格式错误（应为6-12位数字）  <a href='/'>返回</a>");
       return;
     }
   }
@@ -374,6 +453,19 @@ void handleImage() {
   server.send(404, "text/plain", "not found");
 }
 
+// 城市数据JSON服务(SPIFFS 里的 city_data.json)
+void handleCityDataJSON() {
+  if (SPIFFS.exists("/city_data.json")) {
+    fs::File f = SPIFFS.open("/city_data.json", "r");
+    if (f) {
+      server.streamFile(f, "application/json");
+      f.close();
+      return;
+    }
+  }
+  server.send(404, "application/json", "{\"error\":\"city_data.json not found\"}");
+}
+
 // 网页上传图片页(分区：网页壁纸直传 + 相册前端裁剪240x240)
 void handleUploadPage() {
   String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
@@ -397,6 +489,14 @@ void handleUploadPage() {
   html += "<input type='hidden' name='fname' value='m.jpg'>";
   html += "<label>选择图片（将保存为 m.jpg）</label>";
   html += "<input type='file' name='file' accept='image/*'><br>";
+  html += "<button type='submit'>上传并重启</button></form></div>";
+
+  // 城市数据区(JSON直传)
+  html += "<div class='card'><b>城市数据</b><p style='font-size:12px;color:#9ab;margin:4px 0'>上传城市代码JSON文件，用于城市查询功能</p>";
+  html += "<form method='POST' action='/do_upload' enctype='multipart/form-data'>";
+  html += "<input type='hidden' name='fname' value='city_data.json'>";
+  html += "<label>选择JSON文件（将保存为 city_data.json）</label>";
+  html += "<input type='file' name='file' accept='.json,application/json'><br>";
   html += "<button type='submit'>上传并重启</button></form></div>";
 
   // 相册区(前端裁剪240x240)
@@ -579,6 +679,95 @@ void handleDoChangeWiFi() {
     WiFi.disconnect();
     setupWifi();  // 重新走 WiFiManager 连接已保存的旧 WiFi
   }
+}
+
+// 城市代码查询页面(带搜索功能，从SPIFFS加载city_data.json)
+void handleCityList() {
+  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
+  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+  html += "<title>城市代码查询</title>";
+  html += "<style>";
+  html += "body{font-family:sans-serif;background:#1a1a2e;color:#eee;max-width:600px;margin:20px auto;padding:20px;}";
+  html += "h3{text-align:center;margin-bottom:20px;}";
+  html += "#search{width:100%;padding:12px;margin-bottom:16px;border:1px solid #456;border-radius:8px;background:#0f3460;color:#eee;font-size:16px;box-sizing:border-box;}";
+  html += "#count{text-align:center;color:#9ab;margin-bottom:12px;font-size:14px;}";
+  html += "table{width:100%;border-collapse:collapse;background:rgba(22,33,62,.9);border-radius:8px;overflow:hidden;}";
+  html += "th,td{padding:10px;text-align:left;border-bottom:1px solid #456;}";
+  html += "th{background:#0f3460;color:#9ab;font-weight:bold;position:sticky;top:0;}";
+  html += "tr:last-child td{border-bottom:none;}";
+  html += "tr.hidden{display:none;}";
+  html += "a{color:#38bdf8;text-decoration:none;}";
+  html += ".back{text-align:center;margin-top:20px;}";
+  html += ".loading{text-align:center;padding:40px;color:#9ab;}";
+  html += "</style></head><body>";
+  html += "<h3>城市代码查询</h3>";
+  html += "<input type='text' id='search' placeholder='输入城市名称或代码搜索...'>";
+  html += "<div id='count'></div>";
+  html += "<div id='loading' class='loading'>加载中...</div>";
+  html += "<table id='cityTable' style='display:none'>";
+  html += "<thead><tr><th>城市</th><th>代码</th></tr></thead>";
+  html += "<tbody id='cityBody'></tbody>";
+  html += "</table>";
+  html += "<p class='back'><a href='/'>返回控制台</a></p>";
+  html += "<script>";
+  html += "let cities={};let total=0;";
+  html += "fetch('/city_data.json').then(r=>r.json()).then(data=>{";
+  html += "cities=data;total=Object.keys(data).length;";
+  html += "const tbody=document.getElementById('cityBody');";
+  html += "for(const[city,code]of Object.entries(data)){";
+  html += "const tr=document.createElement('tr');tr.dataset.city=city;tr.dataset.code=code;";
+  html += "tr.innerHTML=`<td>${city}</td><td>${code}</td>`;tbody.appendChild(tr);}";
+  html += "document.getElementById('loading').style.display='none';";
+  html += "document.getElementById('cityTable').style.display='table';";
+  html += "updateCount();";
+  html += "}).catch(()=>{document.getElementById('loading').innerHTML='<span style=\"color:#f87171\">加载失败，请确保已上传 city_data.json</span>';});";
+  html += "document.getElementById('search').addEventListener('input',e=>{";
+  html += "const q=e.target.value.toLowerCase();";
+  html += "const rows=document.querySelectorAll('#cityBody tr');";
+  html += "let visible=0;";
+  html += "rows.forEach(row=>{";
+  html += "const city=row.dataset.city.toLowerCase();const code=row.dataset.code;";
+  html += "if(city.includes(q)||code.includes(q)){row.classList.remove('hidden');visible++;}";
+  html += "else{row.classList.add('hidden');}});";
+  html += "updateCount(visible);});";
+  html += "function updateCount(v){const c=v===undefined?total:v;";
+  html += "document.getElementById('count').textContent=`显示 ${c} / ${total} 个城市`;}";
+  html += "</script>";
+  html += "</body></html>";
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+// SPIFFS 文件列表(临时调试路由)
+void handleSPIFFSList() {
+  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
+  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+  html += "<title>SPIFFS 存储信息</title>";
+  html += "<style>";
+  html += "body{font-family:sans-serif;background:#1a1a2e;color:#eee;max-width:600px;margin:20px auto;padding:20px;}";
+  html += "h3{text-align:center;margin-bottom:30px;}";
+  html += ".info{background:rgba(22,33,62,.9);border-radius:12px;padding:20px;text-align:center;}";
+  html += ".stat{font-size:18px;margin:12px 0;color:#9ab;}";
+  html += ".stat b{color:#eee;font-size:24px;}";
+  html += "a{color:#38bdf8;text-decoration:none;}";
+  html += ".back{text-align:center;margin-top:30px;}";
+  html += "</style></head><body>";
+  html += "<h3>SPIFFS 存储信息</h3>";
+
+  // 统计信息
+  size_t totalBytes = SPIFFS.totalBytes();
+  size_t usedBytes = SPIFFS.usedBytes();
+  size_t freeBytes = totalBytes - usedBytes;
+  int usedPercent = usedBytes * 100 / totalBytes;
+
+  html += "<div class='info'>";
+  html += "<div class='stat'>总容量: <b>" + String(totalBytes / 1024) + " KB</b></div>";
+  html += "<div class='stat'>已使用: <b>" + String(usedBytes / 1024) + " KB</b> (" + String(usedPercent) + "%)</div>";
+  html += "<div class='stat'>剩余空间: <b>" + String(freeBytes / 1024) + " KB</b></div>";
+  html += "</div>";
+
+  html += "<p class='back'><a href='/'>返回控制台</a></p>";
+  html += "</body></html>";
+  server.send(200, "text/html; charset=utf-8", html);
 }
 
 // ============================================================
@@ -900,8 +1089,8 @@ void drawWeather() {
   textSpr.setTextSize(3);
   textSpr.setTextColor(COL_TEXT);
   textSpr.setCursor(0, 0);
-  textSpr.print(CITY_NAME);
-  int cw = textSpr.textWidth(CITY_NAME);
+  textSpr.print(cityLabel);
+  int cw = textSpr.textWidth(cityLabel.c_str());
   textSpr.pushSprite((240 - cw) / 2, 116, TRANSPARENT);
 
   // 湿度图标(色键透明)
@@ -1192,6 +1381,7 @@ void setup() {
 
   // SPIFFS(相册)
   if (!SPIFFS.begin(true)) Serial.println("SPIFFS 挂载失败");
+  cleanupSPIFFS();  // 清理无用文件，保持存储干净
 
   // sprite
   numSpr.setColorDepth(16);
@@ -1217,17 +1407,20 @@ void setup() {
   configTime(8 * 3600, 0, "ntp.aliyun.com", "ntp6.aliyun.com");
   getLocalTime(&timeinfo, 10000);
 
-  // WebServer(切模式+壁纸设置+WiFi管理)
+  // WebServer(切模式+壁纸设置+WiFi管理+城市切换)
   server.on("/", handleRoot);
   server.on("/set", handleSet);
   server.on("/wp_select", handleWallpaperSelect);
   server.on("/m.jpg", HTTP_GET, handleImage);
+  server.on("/city_data.json", handleCityDataJSON);
+  server.on("/spiffs_list", handleSPIFFSList);  // 临时调试：查看SPIFFS文件列表
   server.on("/upload", handleUploadPage);
   server.on("/stock_edit", handleStockEdit);
   server.on("/stock_save", HTTP_GET, handleStockSave);
   server.on("/change_wifi", handleChangeWiFi);
   server.on("/do_change_wifi", handleDoChangeWiFi);
   server.on("/reset_wifi", handleResetWiFi);
+  server.on("/city_list", handleCityList);
   server.on("/do_upload", HTTP_POST, []() {
     server.send(200, "text/html; charset=utf-8",
       "<html><body style='font-family:sans-serif;background:#1a1a2e;color:#eee;text-align:center;padding:40px'>"
