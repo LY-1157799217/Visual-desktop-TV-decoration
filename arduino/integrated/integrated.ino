@@ -25,6 +25,8 @@ TFT_eSPI tft = TFT_eSPI();
 Preferences prefs;
 WebServer server(80);
 fs::File fsUploadFile;             // 网页上传文件句柄
+String uploadError = "";            // 上传错误信息
+bool uploadSuccess = false;         // 上传成功标志
 
 #define COL_BG   0x0000
 #define COL_TEXT 0xFFFF
@@ -1422,25 +1424,90 @@ void setup() {
   server.on("/reset_wifi", handleResetWiFi);
   server.on("/city_list", handleCityList);
   server.on("/do_upload", HTTP_POST, []() {
-    server.send(200, "text/html; charset=utf-8",
-      "<html><body style='font-family:sans-serif;background:#1a1a2e;color:#eee;text-align:center;padding:40px'>"
-      "<h3>上传完成，设备将在 2 秒后重启</h3></body></html>");
-    delay(2000);
-    ESP.restart();
+    // 上传完成回调：检查全局标志，成功才重启
+    if (uploadSuccess) {
+      server.send(200, "text/html; charset=utf-8",
+        "<html><body style='font-family:sans-serif;background:#1a1a2e;color:#eee;text-align:center;padding:40px'>"
+        "<h3>上传完成，设备将在 2 秒后重启</h3></body></html>");
+      delay(2000);
+      ESP.restart();
+    } else {
+      server.send(400, "text/html; charset=utf-8",
+        "<html><body style='font-family:sans-serif;background:#1a1a2e;color:#eee;text-align:center;padding:40px'>"
+        "<h3 style='color:#f87171'>上传失败: " + uploadError + "</h3>"
+        "<p><a href='/upload' style='color:#38bdf8'>返回重试</a></p></body></html>");
+    }
   }, []() {
+    // 上传处理回调：白名单验证 + 大小限制
     HTTPUpload& upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
-      String targetName = server.arg("fname");  // 从隐藏字段读目标文件名
-      if (targetName.length() == 0) targetName = upload.filename;  // 回退
+      uploadSuccess = false;
+      uploadError = "";
+
+      String targetName = server.arg("fname");
+      if (targetName.length() == 0) targetName = upload.filename;
+
+      // 白名单验证（只允许指定文件名）
+      const char* ALLOWED_FILES[] = {
+        "m.jpg",           // 网页壁纸
+        "1.jpg", "2.jpg", "3.jpg",  // 相册
+        "city_data.json"   // 城市数据
+      };
+      bool valid = false;
+      for (int i = 0; i < sizeof(ALLOWED_FILES) / sizeof(ALLOWED_FILES[0]); i++) {
+        if (targetName == ALLOWED_FILES[i]) {
+          valid = true;
+          break;
+        }
+      }
+
+      if (!valid) {
+        uploadError = "文件名不在白名单: " + targetName;
+        Serial.println("拒绝上传: " + uploadError);
+        return;
+      }
+
+      // 大小限制（单个文件最大500KB）
+      if (upload.totalSize > 512000) {
+        uploadError = "文件过大(最大500KB): " + targetName;
+        Serial.println("拒绝上传: " + uploadError);
+        return;
+      }
+
       if (fsUploadFile) fsUploadFile.close();
       fsUploadFile = SPIFFS.open("/" + targetName, "w");
+      if (!fsUploadFile) {
+        uploadError = "无法创建文件: " + targetName;
+        Serial.println("上传失败: " + uploadError);
+        return;
+      }
       Serial.printf("开始上传: %s\n", targetName.c_str());
+
     } else if (upload.status == UPLOAD_FILE_WRITE) {
-      if (fsUploadFile) fsUploadFile.write(upload.buf, upload.currentSize);
+      if (uploadError.length() > 0) return;  // 已拒绝，跳过写入
+
+      if (fsUploadFile) {
+        size_t written = fsUploadFile.write(upload.buf, upload.currentSize);
+        if (written != upload.currentSize) {
+          uploadError = "写入失败";
+          Serial.println("上传失败: " + uploadError);
+          fsUploadFile.close();
+          return;
+        }
+      }
+
     } else if (upload.status == UPLOAD_FILE_END) {
+      if (uploadError.length() > 0) {
+        if (fsUploadFile) fsUploadFile.close();
+        return;
+      }
+
       if (fsUploadFile) {
         fsUploadFile.close();
-        Serial.println("上传完成");
+        Serial.println("上传成功");
+        uploadSuccess = true;
+      } else {
+        uploadError = "文件句柄无效";
       }
     }
   });
