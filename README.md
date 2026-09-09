@@ -123,17 +123,20 @@ pio device monitor              # 看串口日志(115200)
 ### 自定义图片展示
 ![图片展示](./assets/a05.jpg)
 
-### 自定义股票行情显示
-![股票行情显示](./assets/a06.jpg)
+### 股票分时图
+![自定义股票分时显示](./assets/a06.jpg)
+
+### 股票日K线图
+![自定义股票日K显示](./assets/a07.jpg)
 
 ### 股票设置
-![股票自定义设置](./assets/a07.jpg)
+![股票自定义设置](./assets/a08.jpg)
 
 ### 城市代码查询
-![城市代码快捷查询](./assets/a08.jpg)
+![城市代码快捷查询](./assets/a09.jpg)
 
 ### 图片+JSON设置
-![图片+JSON自定义设置](./assets/a09.jpg)
+![图片+JSON自定义设置](./assets/a10.jpg)
 
 ### SPIFFS存储信息
-![SPIFFS信息查看](./assets/a10.jpg)
+![SPIFFS信息查看](./assets/a11.jpg)
