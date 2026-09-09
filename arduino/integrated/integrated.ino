@@ -49,6 +49,7 @@ String cityCode        = "101120301";
 String cityLabel       = "Zi Bo";     // 城市显示名称(拼音,可配置)
 String stockCode       = "sh600519";
 int    brightness      = 50;
+bool   autoBrightness  = false;  // 自动亮度调节开关
 int    defaultMode     = 0;
 int    refreshInterval = 5;
 int    wallpaperMode   = 1;   // 壁纸模式: 0无 1静态 2动态
@@ -120,6 +121,7 @@ void loadConfig() {
   cityLabel       = prefs.getString("cityLabel", "Zi Bo");
   stockCode       = prefs.getString("stockCode", "sh600519");
   brightness      = prefs.getInt("brightness", 50);
+  autoBrightness  = prefs.getBool("autoBrightness", false);
   defaultMode     = prefs.getInt("defaultMode", 0);
   refreshInterval = prefs.getInt("refreshInterval", 5);
   wallpaperMode   = prefs.getInt("wallpaperMode", 1);
@@ -191,6 +193,32 @@ void setBrightness(int level) {
   }
 
   brightness = level;  // 更新全局变量
+}
+
+// 自动亮度调节(根据时间段)
+void autoAdjustBrightness() {
+  if (!autoBrightness) return;  // 未开启自动调节，跳过
+  if (!getLocalTime(&timeinfo)) return;  // 时间未同步，跳过
+
+  int hour = timeinfo.tm_hour;
+  int targetBrightness = brightness;
+
+  // 时间段亮度策略
+  if (hour >= 8 && hour < 12) {
+    targetBrightness = 60;  // 08:00-11:59 → 60%
+  } else if (hour >= 12 && hour < 15) {
+    targetBrightness = 90;  // 12:00-14:59 → 90%
+  } else if (hour >= 15 && hour < 20) {
+    targetBrightness = 70;  // 15:00-19:59 → 70%
+  } else if (hour >= 20 || hour < 8) {
+    targetBrightness = 35;  // 20:00-07:59 → 35%
+  }
+
+  // 只在亮度变化时调整
+  if (targetBrightness != brightness) {
+    setBrightness(targetBrightness);
+    Serial.printf("自动亮度: 时段%02d:xx → %d%%\n", hour, targetBrightness);
+  }
 }
 
 // TFT输出回调(JPEG解码块推屏)
@@ -361,13 +389,25 @@ void handleRoot() {
   // 屏幕亮度调节(滑块)
   html += "<details class='card'><summary>屏幕亮度</summary>";
   html += "<div style='margin-top:12px'>";
+
+  // 自动亮度开关
+  html += "<div style='margin-bottom:12px;padding:8px;background:rgba(15,52,96,0.5);border-radius:6px'>";
+  html += "<label style='display:flex;align-items:center;cursor:pointer'>";
+  html += "<input type='checkbox' id='autoBr' " + String(autoBrightness ? "checked" : "") + " ";
+  html += "onchange='location.href=\"/set?auto_brightness=\"+(this.checked?1:0)' ";
+  html += "style='width:20px;height:20px;margin-right:8px'>";
+  html += "<span>自动亮度调节</span></label>";
+  html += "<div class='sub' style='margin-top:4px;font-size:12px'>08:00→60% | 12:00→90% | 15:00→70% | 20:00→35%</div>";
+  html += "</div>";
+
+  // 手动亮度滑块
   html += "<input type='range' min='0' max='100' value='" + String(brightness) + "' id='brightness' ";
   html += "style='width:100%;height:8px;border-radius:4px;outline:none;background:#0f3460' ";
   html += "oninput='document.getElementById(\"brValue\").innerText=this.value'>";
   html += "<div style='text-align:center;margin-top:8px;font-size:20px;color:#38bdf8'>";
   html += "<span id='brValue'>" + String(brightness) + "</span>%</div>";
   html += "<button onclick='location.href=\"/set?brightness=\"+document.getElementById(\"brightness\").value' ";
-  html += "style='width:100%;margin-top:8px'>应用亮度</button>";
+  html += "style='width:100%;margin-top:8px'>手动调节亮度</button>";
   html += "</div></details>";
 
   // 天气城市切换(点击展开)
@@ -479,12 +519,29 @@ void handleSet() {
   if (server.hasArg("brightness")) {
     int br = server.arg("brightness").toInt();
     if (br >= 0 && br <= 100) {
+      autoBrightness = false;  // 手动调节时关闭自动亮度
+      prefs.putBool("autoBrightness", false);
       setBrightness(br);
       prefs.putInt("brightness", br);
       server.send(200, "text/html; charset=utf-8",
-                  "亮度已设置为 <b>" + String(br) + "%</b>  <a href='/'>返回</a>");
+                  "亮度已设置为 <b>" + String(br) + "%</b> (自动亮度已关闭)  <a href='/'>返回</a>");
       return;
     }
+  }
+  // 自动亮度开关
+  if (server.hasArg("auto_brightness")) {
+    int ab = server.arg("auto_brightness").toInt();
+    autoBrightness = (ab == 1);
+    prefs.putBool("autoBrightness", autoBrightness);
+    if (autoBrightness) {
+      autoAdjustBrightness();  // 立即调整一次
+      server.send(200, "text/html; charset=utf-8",
+                  "自动亮度已<b>开启</b>  <a href='/'>返回</a>");
+    } else {
+      server.send(200, "text/html; charset=utf-8",
+                  "自动亮度已<b>关闭</b>  <a href='/'>返回</a>");
+    }
+    return;
   }
   server.send(400, "text/plain", "参数错误");
 }
@@ -1604,6 +1661,13 @@ void setup() {
 
 void loop() {
   server.handleClient();
+
+  // 自动亮度调节(每分钟检查一次)
+  static unsigned long lastBrightnessCheck = 0;
+  if (millis() - lastBrightnessCheck >= 60000UL) {
+    autoAdjustBrightness();
+    lastBrightnessCheck = millis();
+  }
 
   // 动态壁纸轮播(时钟/天气模式 + 动态壁纸开启)
   if (wallpaperMode == 2 && (currentMode == MODE_CLOCK || currentMode == MODE_WEATHER)) {
