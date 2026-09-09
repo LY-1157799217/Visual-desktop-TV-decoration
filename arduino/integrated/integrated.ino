@@ -32,6 +32,12 @@ bool uploadSuccess = false;         // 上传成功标志
 #define COL_TEXT 0xFFFF
 #define COL_DIM  0x7BEF
 
+// ---------------- 背光PWM ----------------
+#define BL_PIN      1     // GPIO1 背光引脚
+#define BL_CHANNEL  0     // LEDC通道0
+#define BL_FREQ     5000  // PWM频率5kHz
+#define BL_RES      8     // 8位分辨率(0-255)
+
 // ---------------- 模式 ----------------
 enum Mode { MODE_CLOCK = 0, MODE_WEATHER = 1, MODE_PHOTO = 2, MODE_STOCK = 3 };
 const char* MODE_NAMES[]    = {"时钟", "天气", "相册", "股票"};
@@ -121,8 +127,12 @@ void loadConfig() {
 }
 
 void setBacklight() {
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, LOW);
+  // 先不启用PWM，只用pinMode初始化
+  pinMode(BL_PIN, OUTPUT);
+  digitalWrite(BL_PIN, LOW);  // 默认全亮
+
+  Serial.println("背光初始化: GPIO1, 模式=OUTPUT, 默认全亮");
+  Serial.println("PWM测试模式：将在setBrightness()中尝试启用PWM");
 }
 
 // SPIFFS 启动清理(删除不在白名单的文件，保持存储干净)
@@ -152,6 +162,35 @@ void cleanupSPIFFS() {
   }
 
   Serial.println("清理完成，删除了 " + String(deleted) + " 个文件");
+}
+
+// 背光亮度设置(0-100 → PWM占空比)
+void setBrightness(int level) {
+  if (level < 0) level = 0;
+  if (level > 100) level = 100;
+
+  if (level == 0) {
+    // 完全关闭：先detach PWM，再用GPIO拉高
+    ledcDetachPin(BL_PIN);
+    pinMode(BL_PIN, OUTPUT);
+    digitalWrite(BL_PIN, HIGH);  // P-MOS：高电平关闭
+    Serial.println("背光: 关闭 (GPIO HIGH)");
+  } else if (level == 100) {
+    // 完全打开：先detach PWM，再用GPIO拉低
+    ledcDetachPin(BL_PIN);
+    pinMode(BL_PIN, OUTPUT);
+    digitalWrite(BL_PIN, LOW);   // P-MOS：低电平全亮
+    Serial.println("背光: 全亮 (GPIO LOW)");
+  } else {
+    // PWM调光：动态启用PWM
+    ledcSetup(BL_CHANNEL, BL_FREQ, BL_RES);
+    ledcAttachPin(BL_PIN, BL_CHANNEL);
+    int duty = map(level, 0, 100, 255, 0);  // 反向映射
+    ledcWrite(BL_CHANNEL, duty);
+    Serial.printf("背光: %d%% (PWM duty=%d, 频率=%dHz)\n", level, duty, BL_FREQ);
+  }
+
+  brightness = level;  // 更新全局变量
 }
 
 // TFT输出回调(JPEG解码块推屏)
@@ -319,6 +358,18 @@ void handleRoot() {
   html += "<a href='/set?stockview=1'><button>日K图</button></a>";
   html += "</div><div class='sub'>当前视图: " + String(stockView == 0 ? "分时图" : "日K图") + "</div></details>";
 
+  // 屏幕亮度调节(滑块)
+  html += "<details class='card'><summary>屏幕亮度</summary>";
+  html += "<div style='margin-top:12px'>";
+  html += "<input type='range' min='0' max='100' value='" + String(brightness) + "' id='brightness' ";
+  html += "style='width:100%;height:8px;border-radius:4px;outline:none;background:#0f3460' ";
+  html += "oninput='document.getElementById(\"brValue\").innerText=this.value'>";
+  html += "<div style='text-align:center;margin-top:8px;font-size:20px;color:#38bdf8'>";
+  html += "<span id='brValue'>" + String(brightness) + "</span>%</div>";
+  html += "<button onclick='location.href=\"/set?brightness=\"+document.getElementById(\"brightness\").value' ";
+  html += "style='width:100%;margin-top:8px'>应用亮度</button>";
+  html += "</div></details>";
+
   // 天气城市切换(点击展开)
   html += "<details class='card'><summary>天气城市</summary>";
   html += "<div class='sub' style='margin-bottom:8px'>当前: <b>" + cityLabel + "</b> (" + cityCode + ") <a href='/city_list' style='color:#38bdf8'>[查询城市代码]</a></div>";
@@ -421,6 +472,17 @@ void handleSet() {
       if (currentMode == MODE_STOCK) drawQuote(stockCurIdx, true);   // 重绘当前股
       server.send(200, "text/html; charset=utf-8",
                   "股票视图已切换  <a href='/'>返回</a>");
+      return;
+    }
+  }
+  // 设置亮度
+  if (server.hasArg("brightness")) {
+    int br = server.arg("brightness").toInt();
+    if (br >= 0 && br <= 100) {
+      setBrightness(br);
+      prefs.putInt("brightness", br);
+      server.send(200, "text/html; charset=utf-8",
+                  "亮度已设置为 <b>" + String(br) + "%</b>  <a href='/'>返回</a>");
       return;
     }
   }
@@ -1374,6 +1436,7 @@ void setup() {
 
   prefs.begin("sdd", false);
   loadConfig();
+  setBrightness(brightness);  // 应用从NVS加载的亮度
 
   // 配网
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
