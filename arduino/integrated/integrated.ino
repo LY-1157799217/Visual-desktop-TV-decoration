@@ -55,6 +55,28 @@ int    refreshInterval = 5;
 int    wallpaperMode   = 1;   // 壁纸模式: 0无 1静态 2动态
 int    wallpaperIndex  = 0;   // 静态壁纸索引(0-2)
 
+// ---------------- Web HTML 静态模板(存Flash节省RAM) ----------------
+const char HTML_HEADER[] PROGMEM = R"(<!DOCTYPE html><html><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>SDD 小电视</title>
+<style>
+body{font-family:-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:14px;background:#1a1a2e url('/m.jpg') no-repeat center center fixed;background-size:cover;color:#eee;min-height:100vh;box-sizing:border-box;}
+.card{background:rgba(22,33,62,.9);border-radius:12px;padding:12px;margin:10px 0;}
+h3{text-align:center;margin:4px 0;}
+h4{margin:4px 0;}
+.grid{display:flex;flex-wrap:wrap;gap:8px;}
+button{font-size:18px;padding:10px 16px;border:none;border-radius:8px;background:#0f3460;color:#eee;cursor:pointer;flex:1;min-width:80px;}
+button:active{background:#16537e;}
+a{text-decoration:none;}
+details.card>summary{font-size:18px;font-weight:bold;cursor:pointer;padding:6px;list-style:none;}
+details.card>summary::before{content:'\25B8 ';}
+details.card[open]>summary::before{content:'\25BE ';}
+.sub{font-size:14px;color:#9ab;margin-top:8px;}
+.center{text-align:center;}
+</style></head><body>
+<h3>SDD 小电视控制台</h3>
+)";
+
 struct tm timeinfo;
 
 // ---------------- 天气数据 ----------------
@@ -344,108 +366,114 @@ void setupWifi() {
 
 // ---------------- WebServer ----------------
 void handleRoot() {
-  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
-  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<title>SDD 小电视</title>";
-  html += "<style>";
-  html += "body{font-family:-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:14px;"
-          "background:#1a1a2e url('/m.jpg') no-repeat center center fixed;background-size:cover;color:#eee;min-height:100vh;box-sizing:border-box;}";
-  html += ".card{background:rgba(22,33,62,.9);border-radius:12px;padding:12px;margin:10px 0;}";
-  html += "h3{text-align:center;margin:4px 0;}";
-  html += "h4{margin:4px 0;}";
-  html += ".grid{display:flex;flex-wrap:wrap;gap:8px;}";
-  html += "button{font-size:18px;padding:10px 16px;border:none;border-radius:8px;background:#0f3460;color:#eee;cursor:pointer;flex:1;min-width:80px;}";
-  html += "button:active{background:#16537e;}";
-  html += "a{text-decoration:none;}";
-  html += "details.card>summary{font-size:18px;font-weight:bold;cursor:pointer;padding:6px;list-style:none;}";
-  html += "details.card>summary::before{content:'\\25B8 ';}";
-  html += "details.card[open]>summary::before{content:'\\25BE ';}";
-  html += ".sub{font-size:14px;color:#9ab;margin-top:8px;}";
-  html += ".center{text-align:center;}";
-  html += "</style></head><body>";
-  html += "<h3>SDD 小电视控制台</h3>";
-  html += "<div class='card center'>当前模式: <b>" + String(MODE_NAMES[currentMode]) + "</b> &middot; IP: " + WiFi.localIP().toString() + "</div>";
+  // 使用chunked传输，避免拼接大String
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html; charset=utf-8", "");
+
+  // 发送HTML头部（从Flash读取）
+  server.sendContent_P(HTML_HEADER);
+
+  // 动态内容：当前状态
+  char buf[512];  // 增大缓冲区到512字节
+  snprintf(buf, sizeof(buf),
+    "<div class='card center'>当前模式: <b>%s</b> &middot; IP: %s</div>",
+    MODE_NAMES[currentMode], WiFi.localIP().toString().c_str());
+  server.sendContent(buf);
 
   // 模式切换
-  html += "<div class='card'><h4>模式切换</h4><div class='grid'>";
-  for (int i = 0; i < 4; i++) {
-    html += "<a href='/set?mode=" + String(i) + "'><button>" + MODE_NAMES[i] + "</button></a>";
-  }
-  html += "</div></div>";
+  server.sendContent_P(PSTR("<div class='card'><h4>模式切换</h4><div class='grid'>"));
+  server.sendContent_P(PSTR("<a href='/set?mode=0'><button>时钟</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?mode=1'><button>天气</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?mode=2'><button>相册</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?mode=3'><button>股票</button></a>"));
+  server.sendContent_P(PSTR("</div></div>"));
 
-  // 壁纸复合按键(点击展开)
-  html += "<details class='card'><summary>壁纸</summary><div class='grid'>";
-  html += "<a href='/wp_select'><button>静态壁纸</button></a>";
-  html += "<a href='/set?wp=2'><button>动态壁纸</button></a>";
-  html += "<a href='/set?wp=0'><button>取消壁纸</button></a>";
-  html += "</div><div class='sub'>当前壁纸: " + String(wallpaperMode == 0 ? "无" : (wallpaperMode == 1 ? "静态" : "动态")) + "</div></details>";
+  // 壁纸折叠区
+  server.sendContent_P(PSTR("<details class='card'><summary>壁纸</summary><div class='grid'>"));
+  server.sendContent_P(PSTR("<a href='/wp_select'><button>静态壁纸</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?wp=2'><button>动态壁纸</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?wp=0'><button>关闭壁纸</button></a>"));
+  server.sendContent_P(PSTR("</div></details>"));
 
-  // 股票视图复合按键(点击展开)
-  html += "<details class='card'><summary>股票视图</summary><div class='grid'>";
-  html += "<a href='/set?stockview=0'><button>分时图</button></a>";
-  html += "<a href='/set?stockview=1'><button>日K图</button></a>";
-  html += "</div><div class='sub'>当前视图: " + String(stockView == 0 ? "分时图" : "日K图") + "</div></details>";
+  // 股票视图折叠区
+  server.sendContent_P(PSTR("<details class='card'><summary>股票视图</summary><div class='grid'>"));
+  server.sendContent_P(PSTR("<a href='/set?stockview=0'><button>分时图</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?stockview=1'><button>日K图</button></a>"));
+  server.sendContent_P(PSTR("</div>"));
+  snprintf(buf, sizeof(buf), "<div class='sub'>当前视图: %s</div></details>",
+    stockView == 0 ? "分时图" : "日K图");
+  server.sendContent(buf);
 
-  // 屏幕亮度调节(滑块)
-  html += "<details class='card'><summary>屏幕亮度</summary>";
-  html += "<div style='margin-top:12px'>";
+  // 屏幕亮度调节
+  server.sendContent_P(PSTR("<details class='card'><summary>屏幕亮度</summary><div style='margin-top:12px'>"));
 
   // 自动亮度开关
-  html += "<div style='margin-bottom:12px;padding:8px;background:rgba(15,52,96,0.5);border-radius:6px'>";
-  html += "<label style='display:flex;align-items:center;cursor:pointer'>";
-  html += "<input type='checkbox' id='autoBr' " + String(autoBrightness ? "checked" : "") + " ";
-  html += "onchange='location.href=\"/set?auto_brightness=\"+(this.checked?1:0)' ";
-  html += "style='width:20px;height:20px;margin-right:8px'>";
-  html += "<span>自动亮度调节</span></label>";
-  html += "<div class='sub' style='margin-top:4px;font-size:12px'>08:00→60% | 12:00→90% | 15:00→70% | 20:00→35%</div>";
-  html += "</div>";
+  snprintf(buf, sizeof(buf),
+    "<div style='margin-bottom:12px;padding:8px;background:rgba(15,52,96,0.5);border-radius:6px'>"
+    "<label style='display:flex;align-items:center;cursor:pointer'>"
+    "<input type='checkbox' id='autoBr' %s onchange='location.href=\"/set?auto_brightness=\"+(this.checked?1:0)' "
+    "style='width:20px;height:20px;margin-right:8px'>"
+    "<span>自动亮度调节</span></label>"
+    "<div class='sub' style='margin-top:4px;font-size:12px'>08:00→60%% | 12:00→90%% | 15:00→70%% | 20:00→35%%</div>"
+    "</div>",
+    autoBrightness ? "checked" : "");
+  server.sendContent(buf);
 
   // 手动亮度滑块
-  html += "<input type='range' min='0' max='100' value='" + String(brightness) + "' id='brightness' ";
-  html += "style='width:100%;height:8px;border-radius:4px;outline:none;background:#0f3460' ";
-  html += "oninput='document.getElementById(\"brValue\").innerText=this.value'>";
-  html += "<div style='text-align:center;margin-top:8px;font-size:20px;color:#38bdf8'>";
-  html += "<span id='brValue'>" + String(brightness) + "</span>%</div>";
-  html += "<button onclick='location.href=\"/set?brightness=\"+document.getElementById(\"brightness\").value' ";
-  html += "style='width:100%;margin-top:8px'>手动调节亮度</button>";
-  html += "</div></details>";
+  snprintf(buf, sizeof(buf),
+    "<input type='range' min='0' max='100' value='%d' id='brightness' "
+    "style='width:100%%;height:8px;border-radius:4px;outline:none;background:#0f3460' "
+    "oninput='document.getElementById(\"brValue\").innerText=this.value'>"
+    "<div style='text-align:center;margin-top:8px;font-size:20px;color:#38bdf8'>"
+    "<span id='brValue'>%d</span>%%</div>"
+    "<button onclick='location.href=\"/set?brightness=\"+document.getElementById(\"brightness\").value' "
+    "style='width:100%%;margin-top:8px'>手动调节亮度</button>"
+    "</div></details>",
+    brightness, brightness);
+  server.sendContent(buf);
 
-  // 天气城市切换(点击展开)
-  html += "<details class='card'><summary>天气城市</summary>";
-  html += "<div class='sub' style='margin-bottom:8px'>当前: <b>" + cityLabel + "</b> (" + cityCode + ") <a href='/city_list' style='color:#38bdf8'>[查询城市代码]</a></div>";
-  html += "<div class='grid'>";
-  html += "<a href='/set?city=101010100&label=Beijing'><button>北京</button></a>";
-  html += "<a href='/set?city=101020100&label=Shanghai'><button>上海</button></a>";
-  html += "<a href='/set?city=101280101&label=Guangzhou'><button>广州</button></a>";
-  html += "<a href='/set?city=101280601&label=Shenzhen'><button>深圳</button></a>";
-  html += "<a href='/set?city=101210101&label=Hangzhou'><button>杭州</button></a>";
-  html += "<a href='/set?city=101270101&label=Chengdu'><button>成都</button></a>";
-  html += "<a href='/set?city=101110101&label=Xian'><button>西安</button></a>";
-  html += "<a href='/set?city=101200101&label=Wuhan'><button>武汉</button></a>";
-  html += "<a href='/set?city=101281601&label=Zi Bo'><button>淄博</button></a>";
-  html += "<a href='/set?city=101120101&label=Jinan'><button>济南</button></a>";
-  html += "</div>";
-  html += "<form action='/set' method='GET' style='margin-top:12px'>";
-  html += "<input type='text' name='city' placeholder='城市代码(如101210101)' style='width:calc(50% - 6px);padding:10px;border:1px solid #456;border-radius:6px;background:#0f3460;color:#eee;font-size:14px;box-sizing:border-box'>";
-  html += "<input type='text' name='label' placeholder='城市名称(拼音)' style='width:calc(50% - 6px);padding:10px;margin-left:4px;border:1px solid #456;border-radius:6px;background:#0f3460;color:#eee;font-size:14px;box-sizing:border-box'>";
-  html += "<button type='submit' style='width:100%;margin-top:8px'>切换</button>";
-  html += "</form>";
-  html += "</details>";
+  // 天气城市切换
+  snprintf(buf, sizeof(buf),
+    "<details class='card'><summary>天气城市</summary>"
+    "<div class='sub' style='margin-bottom:8px'>当前: <b>%s</b> (%s) "
+    "<a href='/city_list' style='color:#38bdf8'>[查询城市代码]</a></div>"
+    "<div class='grid'>",
+    cityLabel.c_str(), cityCode.c_str());
+  server.sendContent(buf);
 
-  html += "<p class='center' style='margin-top:16px'><a href='/upload' style='color:#9ab'>上传图片...</a> &middot; <a href='/stock_edit' style='color:#9ab'>更换股票...</a> &middot; <a href='/spiffs_list' style='color:#9ab'>SPIFFS文件列表</a></p>";
+  // 快捷城市按钮
+  server.sendContent_P(PSTR("<a href='/set?city=101010100&label=Beijing'><button>北京</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101020100&label=Shanghai'><button>上海</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101280101&label=Gz'><button>广州</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101280601&label=Shenzhen'><button>深圳</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101210101&label=Hangzhou'><button>杭州</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101270101&label=Chengdu'><button>成都</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101110101&label=Xian'><button>西安</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101200101&label=Wuhan'><button>武汉</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101120301&label=Zi Bo'><button>淄博</button></a>"));
+  server.sendContent_P(PSTR("<a href='/set?city=101250101&label=Jinan'><button>济南</button></a>"));
+  server.sendContent_P(PSTR("</div></details>"));
 
-  // WiFi 管理折叠区（警告色）
-  html += "<details class='card' style='background:rgba(120,30,30,.85);border:1px solid #f87171;margin-top:20px'>";
-  html += "<summary style='color:#fca5a5'>⚠ WiFi 管理</summary>";
-  html += "<div class='grid' style='margin-top:12px'>";
-  html += "<a href='/change_wifi'><button style='background:#16a34a;color:#fff'>更换 WiFi</button></a>";
-  html += "<button onclick=\"if(confirm('确认重置 WiFi？\\n\\n设备将重启并进入配网模式（AP 热点）。\\n\\n请在设备重启后（约 5 秒），手动连接热点 SmallTV-XXXXXX，再打开 192.168.4.1 重新配网。')){location.href='/reset_wifi'}\" style='background:#dc2626;color:#fff'>重置 WiFi</button>";
-  html += "</div>";
-  html += "<div class='sub' style='margin-top:8px'>更换: 输入新 WiFi 快速切换<br>重置: 清空配置进 AP 配网模式（保底）</div>";
-  html += "</details>";
+  // 快捷功能
+  server.sendContent_P(PSTR("<div class='card center'><p>"));
+  server.sendContent_P(PSTR("<a href='/upload' style='color:#9ab'>上传图片...</a> &middot; "));
+  server.sendContent_P(PSTR("<a href='/stock_edit' style='color:#9ab'>股票配置...</a> &middot; "));
+  server.sendContent_P(PSTR("<a href='/spiffs_list' style='color:#9ab'>SPIFFS文件列表</a></p>"));
+  server.sendContent_P(PSTR("</div>"));
 
-  html += "</body></html>";
-  server.send(200, "text/html; charset=utf-8", html);
+  // WiFi管理折叠区
+  server.sendContent_P(PSTR("<details class='card' style='background:rgba(120,30,30,.85);border:1px solid #f87171;margin-top:20px'>"));
+  server.sendContent_P(PSTR("<summary style='color:#fca5a5'>⚠ WiFi 管理</summary>"));
+  server.sendContent_P(PSTR("<div class='grid' style='margin-top:12px'>"));
+  server.sendContent_P(PSTR("<a href='/change_wifi'><button style='background:#16a34a;color:#fff'>更换 WiFi</button></a>"));
+  server.sendContent_P(PSTR("<button onclick=\"if(confirm('确认重置 WiFi？\\n\\n设备将重启并进入配网模式（AP 热点）。\\n\\n请在设备重启后（约 5 秒），手动连接热点 SmallTV-XXXXXX，再打开 192.168.4.1 重新配网。')){location.href='/reset_wifi'}\" style='background:#dc2626;color:#fff'>重置 WiFi</button>"));
+  server.sendContent_P(PSTR("</div>"));
+  server.sendContent_P(PSTR("<div class='sub' style='margin-top:8px'>更换: 输入新 WiFi 快速切换<br>重置: 清空配置进 AP 配网模式（保底）</div>"));
+  server.sendContent_P(PSTR("</details>"));
+
+  // 结束标签
+  server.sendContent_P(PSTR("</body></html>"));
+  server.sendContent("");  // 结束chunked传输
 }
 
 void handleSet() {
@@ -1528,6 +1556,12 @@ void setup() {
   // NTP(时钟)
   configTime(8 * 3600, 0, "ntp.aliyun.com", "ntp6.aliyun.com");
   getLocalTime(&timeinfo, 10000);
+
+  // 开机自动亮度检测：若已开启自动调节，立即按当前时段刷新亮度
+  // 避免重启后停留在旧亮度直到下次60秒轮询才生效
+  if (autoBrightness) {
+    autoAdjustBrightness();
+  }
 
   // WebServer(切模式+壁纸设置+WiFi管理+城市切换)
   server.on("/", handleRoot);
