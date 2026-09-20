@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
-#include <WiFi.h>
+// 注意：**不要** include <WiFi.h> —— 本工程是纯屏显诊断，不联网、不写 NVS。
+//       具体原因见 setup() 末尾那段警告。
 #include "../include/config.h"
 
 TFT_eSPI tft = TFT_eSPI();
@@ -28,7 +29,10 @@ void setup() {
     tft.invertDisplay(true);
 
     // 设置旋转方向（0=USB下，1=USB右，2=USB上，3=USB左）
-    tft.setRotation(2);  // USB在上方
+    // ⚠️ 必须与主工程 arduino/integrated 保持一致（那边是 setRotation(0)）。
+    //    本工程是"屏显是否正常"的判据，朝向不一致会让人误以为屏有问题
+    //    —— 实测踩过：rotation 2 相对主工程正好倒转 180°。
+    tft.setRotation(0);
 
     // 清屏测试
     Serial.println("Testing display...");
@@ -55,34 +59,16 @@ void setup() {
     tft.println("Display OK!");
 
     Serial.println("Display test complete!");
+    Serial.println("(本工程只测屏显，不碰 WiFi / NVS / SPIFFS)");
 
-    // WiFi连接
-    Serial.println("Connecting to WiFi...");
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\nWiFi connected!");
-        Serial.print("IP: ");
-        Serial.println(WiFi.localIP());
-
-        tft.setCursor(10, 100);
-        tft.println("WiFi: OK");
-        tft.setCursor(10, 130);
-        tft.print("IP:");
-        tft.println(WiFi.localIP());
-    } else {
-        Serial.println("\nWiFi failed!");
-        tft.setCursor(10, 100);
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.println("WiFi: FAIL");
-    }
+    // ⚠️⚠️ 【绝对不要在这里加 WiFi.begin()】⚠️⚠️
+    //   本工程是"屏幕是否正常"的诊断工具，**不需要联网**。
+    //   曾经这里有一段 `WiFi.begin(WIFI_SSID, WIFI_PASS)`，而 config.h 里那两个是
+    //   占位符（"YOUR_WIFI_SSID"/"YOUR_WIFI_PASSWORD"）—— 后果是：
+    //   ESP32 的 WiFi 驱动会【把这对占位符写进 NVS】，直接顶掉使用者真实的配网凭据。
+    //   ⇒ 用户用它排障一次，设备就连不上自家 WiFi 了，还得重新配网。
+    //   （实测踩过：排查后设备 AutoConnect 失败，读 NVS 才发现 ssid 被改成 YOUR_WIFI_SSID。）
+    //   所以：本工程必须保持"只读屏幕"，一个字节都不写 NVS。
 }
 
 void loop() {

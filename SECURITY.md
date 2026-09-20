@@ -1,13 +1,80 @@
-# Security and Local Configuration
+# 安全说明
 
-This repository intentionally contains placeholders instead of real Wi-Fi credentials or LAN addresses.
+本仓库**不含任何真实凭据** —— 没有真实 WiFi 账号密码、没有内网地址、没有 API 密钥。
+所有配置都在设备端由用户自己填写（见 README「第二步」）。
 
-Before compiling a firmware sketch:
+---
 
-1. Replace `YOUR_WIFI_SSID` and `YOUR_WIFI_PASSWORD` in the selected sketch, or in `firmware/include/config.h` for the PlatformIO project.
-2. Replace the example daemon host in `WEBHOOK_BASE` or `DAEMON_BASE` with the local machine running `daemon/app.py`.
-3. Do not commit those local edits. Restore the placeholders before creating a commit, or keep local-only changes in an ignored file.
+## 一、当前主工程（`arduino/integrated/`）
 
-The daemon listens on the local network without authentication by default. Do not expose port 8899 directly to the public Internet. Restrict access with a firewall or add authentication before using it outside a trusted LAN.
+### ⚠️ 部署前提：仅用于**可信局域网**
 
-If real credentials were ever committed to a repository, rotate them even after removing the files from the working tree because Git history may retain them.
+请把设备当作一台**局域网内可见、且没有访问控制**的小服务器来对待：
+
+- **不要**把它映射到公网（不要做端口转发 / 反向代理 / 内网穿透）。
+- 不要放在不可信的公共 WiFi 下。
+- 同一局域网内的任何人都能打开控制台并修改设备设置。
+
+### 已知限制（如实列出，尚未修复）
+
+| # | 限制 | 说明 |
+|---|---|---|
+| 1 | **WiFi 密码经 GET 提交** | 「更换 WiFi」页的表单用 `method='GET'` 提交，密码会出现在请求 URL 里，可能被浏览器历史、代理日志记录。**后续应改为 POST**（注意：POST 本身不提供加密） |
+| 2 | **控制台无认证** | 全部路由（`/set`、`/stock_save`、`/change_wifi`、`/reset_wifi`、`/do_upload` 等）都没有口令校验，任何能访问该 IP 的人都能操作设备 |
+| 3 | **控制台为明文 HTTP** | 局域网内可被嗅探。修改 WiFi 密码时尤其注意 |
+| 4 | **HTTPS 行情跳过证书校验** | 分时/日K 请求使用 `setInsecure()`，不校验服务器证书。这是为省 Flash/RAM 做的取舍，**不防中间人**，请知悉 |
+
+### 数据存放位置
+
+- WiFi 凭据、自选股、城市、亮度等：**设备自身 NVS**（`Preferences`）
+- 图片与城市数据：**设备自身 SPIFFS**
+- 设备**不会**把使用者的配置或图片上传到项目作者的服务器（详见 README「数据接口说明」）
+
+> README 的「数据接口说明」里列出了设备与浏览器各自会访问的第三方公开服务，
+> 建议一并阅读 —— 那里说明了数据会流向哪些外部服务。
+
+---
+
+## 二、历史模块（`daemon/`）
+
+`daemon/app.py` 是项目**早期**（v0.1）的 PC 端 Flask 中转服务，仅配合 `arduino/stocktv` 使用，
+**当前主工程不需要它**。
+
+- 它默认在局域网内监听 **8899 端口，且没有任何认证**。
+- **不要**把 8899 直接暴露到公网。若确需在可信局域网外使用，请自行加防火墙规则或认证层。
+
+> 早期版本的说明文字要求用户"修改源码里的 `YOUR_WIFI_SSID` / `YOUR_WIFI_PASSWORD` 常量"。
+> **当前主工程已不需要改任何代码** —— 配网全部在设备的 AP 配网页面上完成（见 README「第二步」）。
+> 那段说明只适用于 `firmware/` 下的 PlatformIO 调试工程。
+
+---
+
+## 三、设备里存有你的 WiFi 密码
+
+设备要连你的 WiFi，就必须保存账号密码。请知悉：
+
+- **存放位置**：设备自身 NVS，**默认未做加密保护**。
+  能物理接触设备并读取其 flash 的人，可以从中取出 WiFi 密码。
+  （WiFi 凭据由 WiFi 驱动保存；固件自己的 `Preferences` 里存的是自选股、城市、亮度等设置。）
+- **通信方式**：配网与「更换 WiFi」都在局域网明文 HTTP 页面上完成（见第一节第 3 条）；
+  「更换 WiFi」的表单还是 **GET 提交**，密码会进入 URL（见第一节第 1 条）。
+
+### ⇒ 作礼物送出、作商品转卖、更换设备之前
+
+| 建议做法 | 效果 |
+|---|---|
+| 网页控制台「重置 WiFi」 | 清空 NVS 中的 WiFi 凭据，设备回到 AP 配网模式 |
+| 重新烧录一版不配网的固件 | 同上，且覆盖原有配置 |
+| 最彻底：整片 flash 擦除 | `esptool.py erase_flash` |
+
+> ⚠️ 也因为这一点：**尽量不要把设备借给不信任的人，也不要在不可信的网络上配网。**
+
+---
+
+## 四、附：给本仓库的贡献者 / 二次开发者
+
+> 👆 **本节受众不是使用者，而是向本仓库提交代码、或基于本仓库二次开发的人。**
+
+提交前请自查：本仓库**不含真实凭据**（`.gitignore` 已排除 `.env`、`secrets.*`、
+`credentials.*`、`*.pem`、`*.key`），别把本地填入的 WiFi 账号密码或内网 IP 一起提交 ——
+**一旦推送过就不可撤销**（Git 历史与可能的 fork 里都还在），届时只能轮换凭据。

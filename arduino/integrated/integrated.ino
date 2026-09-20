@@ -1,133 +1,41 @@
 // ============================================================
 // integrated.ino — SDD 小电视 整合版 (Step2)
-// 四模式: 时钟/天气/相册(真实渲染) + 股票(占位, Step3)
+// 四模式: 时钟 / 天气 / 相册 / 股票(分时+日K双视图)
 // 配网: WiFiManager | 切模式: WebServer | 配置: Preferences
 // 引脚(已在 User_Setup.h 配好): SCL=IO3 SDA=IO5 DC=IO2 RST=IO6 BL=IO1 CS=GND
 // ============================================================
 //
-// ██████ 【对比测试专用补丁 build】 2026-09-17 ██████
-//
-// 本文件 = `Desktop\New`（无 Pi 版 / 已发布仓库）的【逐字节副本】+ 11 处改动。
-// 唯一目的：与「Pi Hub 版」做【同口径】性能对比（PERFORMANCE.md 附录24）。
-//
-// ⚠️⚠️ 这是【测量构建】，不是发布版本。测完请回到 New 原版。
-//      源文件 MD5 3e7a226ff4f88cdc14f5ace452c3f3b3（改动前的副本基线）
-//
-// 10 处改动：
-//   ── 埋点类（①~⑥，绝不触碰任何业务逻辑/判据/TTL）──
-//   ① 文件头本说明 + `#define FW_TAG`（用于确认烧的到底是哪一版）
-//   ② refreshInterval 默认 5 → 60
-//      ⚠️ NVS 里已存有值时【默认值不生效】，所以必须有 ③
-//   ③ 新增 `/set?refresh=N` —— ★ 唯一的功能性新增。
-//      原版只能进配网门户改，无法在测试现场快速对齐口径。
-//      若不加这条，"把 New 也设成 60s"这个前提就无法保证 ⇒ 对比失去意义。
-//   ④ 启动打印 `[FW]` 一行，显示【实际生效】的 refreshInterval（可当场核对）
-//   ⑤ 新增 `/status` 路由（只读 JSON，不产生任何取数）
-//   ⑥ loop() 加 `[HB]` 心跳（每 60s 一行，只读埋点）
-//   ── 移植类（⑦，从 Pi Hub 版 `integrated-balance.ino` 搬回，见附录24 第2步）──
-//   ⑦ `httpsGet10()` 加「裁到第一个 `{`」兜底
-//      起因：R3 实测 10 分钟内 4 次 `[spark]` 失败，全是 `json err=InvalidInput`
-//            （strLen 却有 10921~12046，即数据拿到了但不是合法 JSON）。
-//            对照 R2（Pi Hub 版·Pi 不可达）同样的直连路径 0/20 失败 ⇒ 差异就在这条兜底。
-//      原理：那个「跳过响应头」的循环不可靠，字符串里仍可能带着 HTTP 头；
-//            找 JSON 起点这个判据【与原因无关】—— 头没跳净 / readStringUntil 超时返回空串，
-//            两条路都能被它救。所以是【有意的不追根因，只兜底】。
-//      ⚠️ 这一条约 6 行，【不新增任何取数、不改任何 TTL】⇒ 对 loopMs/free/maxAlloc 零影响。
-//
-//   ── 移植类（⑧，本步的【主要改动】）──
-//   ⑧ `renderStock()` 加「取数节流」三件套：每股一份戳 + TTL + `didFetch` 互斥
-//      ① 补丁前：同一轮 loop() 里 quote + spark (+kline) 连拉 2~3 次 ⇒ 最坏单轮 4s+
-//                 ⇒ 这就是"快速切换模式时卡顿"的来源，也违反本课题铁律。
-//      ② 补丁后：`didFetch` 保证一轮最多 1 次取数 ⇒ **把尾部延迟钉死在"一次取数"上**。
-//      ③ 另外给 spark 加 TTL=120s、kline 加 TTL=30min（每股一份戳，防周期共振）。
-//      ④ 日K的判据从 `stockView==1 && refreshIdx==stockCurIdx`（两个索引各走各的周期，
-//         几乎对不上 ⇒ 日K图长期空白）改成"跟当前显示股 + TTL"。
-//      ⚠️ 这条【会改变取数频率】⇒ loopMs 的变化【不能】全归功于它，要分项看：
-//         · didFetch  ⇒ 压的是【尾部】（loopMs max、切模式卡顿）
-//         · spark TTL ⇒ 压的是【均值】（TLS 次数从 4/min 降到约 2/min）
-//      ⚠️ 副作用（预期内）：分时图从"60s 更新"变成"120s 更新"。
-//         嫌旧就把 SPARK_TTL_MS 改回 60000UL（旋钮就在全局变量那一段）。
-//         【已定】最终取 120000UL。依据 = 分时图本身只画 48 个点（每点=5分钟），
-//         天生滞后 2.5~5 分钟 ⇒ 60s 刷新里 4/5 次拉回的是【逐像素相同】的图。
-//         ⚠️ 若改回 60s，取数率会【完全回到】补丁前水平 ⇒ 本条的收益归零。
-//
-//   ── 埋点类（⑨）──
-//   ⑨ `[HB]` 末尾追加 `loopPeakMs=`（本窗口内【单轮最长】耗时，不含 delay(50)）
-//      起因：loopMs 是【60s 窗口平均值】，对"卡顿"是瞎的 ——
-//            实测有一轮卡了约 17 秒，摊进平均值只让 loopMs 从 ~60 变成 81。
-//            而这恰恰是用户唯一能感知的量。
-//      ⇒ 判读：loopPeakMs ≈ 0~50 健康；数百 = 被占用；**上千 = 一次 TLS 卡住**。
-//      ⚠️ 字段追加在【末尾】—— analyze_longrun.py 的 [HB] 正则无 $ 锚，追加安全。
-//
-//   ── 埋点类（⑩ · C 阶段）──
-//   ⑩ 逐次【取数耗时】打点：`[T] <类型> <代码> <ms>ms ok=<0|1>`
-//      起因：R6 的 loopPeakMs 显示每个 60s 窗口都有 1.7~31 秒的单轮阻塞，
-//            但归不到任何一笔上 ⇒ 把 quote/spark/kline/weather 各自计时打出来，
-//            同时给 handleClient / autoBrightness / showWallpaper / renderCurrentMode
-//            加 >=200ms 阈值打点。
-//      ⇒ 判读：把 [T] 行的 ms【求和】塞进同一个 [HB] 窗口 ——
-//          · 能对上 loopPeakMs 的尖峰 ⇒ 嫌疑锁定在那个类型上
-//          · 全加起来还凑不出尖峰    ⇒ 病灶在没打点的别处（绘图/屏刷/WebServer）
-//      ⚠️ 标签是 `[T]`，特意避开 `[spark]`（analyze_longrun.py 用子串计失败数）。
-//
-//   ── 功能类（⑪）──
-//   ⑪ `/set` 确认页 + 控制台首页加【导航防抖】（`NAV_GUARD_JS` / `SEND_PAGE`）
-//      起因（用户实测）：在"已切换到…返回"页面上【连点"返回"】会弹
-//        `net::ERR_CONNECTION_RESET`（多数）/ `ERR_CONNECTION_REFUSED`（少数）。
-//      成因链（推断，但每环都有实测支撑）：
-//        ① 点"返回" = 加载控制台首页，而首页实测【4997 字节要 3.9~6.6 秒】
-//           （由 48 个 sendContent_P 分块发送；机制候选"分块数 / Nagle+延迟ACK"均未定证）
-//        ② 用户等不及再点 ⇒ 浏览器【取消上一次导航】另起请求
-//        ③ 设备还在给那条被取消的连接写 chunk ⇒ 对它发 RST ⇒ ERR_CONNECTION_RESET
-//      ⇒ 防抖切中 ②：本次导航未结束前，后续点击一律 preventDefault。
-//      ⚠️ 只拦【导航类】点击（`<a>` 或 onclick 含 location.href/replace），
-//         否则会把相册页"选图并裁剪 / 确认并上传"那类纯 JS 按钮一起拦死。
-//      ⚠️ 9 秒兜底解禁：万一导航失败（浏览器错误页），页面不会永久锁死。
-//      ⚠️ 本补丁【只改了 /set(8处) 和首页(1处)】，`handleSet` 之外的 10 处 send 未动。
-//
-// ⚠️ 【字段名坑】`[HB]` 里的 `asyncStackFree=` 在本 build 装的**不是** AsyncTCP 栈，
-//     而是 **loopTask 的栈余量**（`uxTaskGetStackHighWaterMark(NULL)`）。
-//     原因：New 用【同步 WebServer】，压根没有 AsyncTCP 任务；
-//     但 tools/analyze_longrun.py 的 [HB] 正则是逐字段严格匹配的
-//     （`... maxAlloc=(\d+) asyncStackFree=(\d+)B`），
-//     保留字段名才能复用同一套分析工具。
-//     ⇒ **解读时【不要】把这一列与 Pi Hub 版横向比。**
-//
-// ⚠️ 【与 Pi Hub 版的已知差异，解读时必须记得】：
-//     New 没有 RTC 面包屑、没有 boots/panicBoots、没有 `[mode]` 感知延迟埋点、
-//     没有 Pi 熔断器 —— 这些 Pi Hub 版有、这里没有。
-//     ⇒ 对比【只】在 loopMs / free / maxAlloc 三列上做。
-// ============================================================
-// ██████████ 【构建开关】本文件里的测量埋点，全部由这一个数字切换 ██████████
+// ── 诊断构建开关 ───────────────────────────────────────────────────────────
 //
 //   ⚠️⚠️ 这是【源码里的一行】—— 改数字后必须【重新编译 + 重新烧录】才生效。
-//        **不是网页按钮，也不是运行时可切的东西。**
+//        不是网页按钮，也不是运行时可切的东西。
 //        原因：要的是"发布版里那段埋点代码【根本不存在】"（串口干净、固件更小）。
-//        网页按钮只能让它"不执行"—— 代码、字符串、printf 格式串仍然全在固件里。办不到这件事。
+//        网页按钮只能让它"不执行"——代码、字符串、printf 格式串仍然全在固件里。
 //
-//   CMP_BUILD = 1  → 【测量构建】：带 [HB] 心跳 / loopPeakMs / [T] 逐笔取数耗时
-//                     （跟 Pi Hub 版做同口径对比、跑长跑分析时用）
-//   CMP_BUILD = 0  → 【发布构建】：上述埋点【整段不编译】
-//                     （同步进 `Desktop\New` 的那一份就是这个）
+//   CMP_BUILD = 1  → 诊断构建：带 [HB] 心跳 / loopPeakMs / [T] 逐笔取数耗时
+//   CMP_BUILD = 0  → 发布构建：上述埋点【整段不编译】（正常使用）
 //
-//   ⇒ 同步时【同一份源码】，只把这里 1 改成 0。要再测就改回 1。
 //   ⚠️ 两种构建【只差埋点】，不含任何业务逻辑差异 —— 取数/节流/网页/防抖全部原样。
-//   ⚠️ 发布构建的 FW_TAG 故意不同（new-rel- 前缀）⇒ 用户报问题时一眼能认出烧的是哪种。
+//   ⚠️ 两种构建的 FW_TAG 故意不同（new-rel- 前缀）⇒ 排障时一眼能认出烧的是哪种。
 #define CMP_BUILD 0
 
 #if CMP_BUILD
-  #define FW_TAG "new-cmp9-20260917"     // R10=cmp8(+⑪防抖) / R11=cmp9(+⑫首页一次性发送)
+  #define FW_TAG "new-cmp9-20260917"     // 诊断构建
 #else
   #define FW_TAG "new-rel-20260918"      // 发布构建
 #endif
 
-// ── 【补丁⑩】取数逐次耗时打点（C 阶段：定位那 31 秒到底花在哪）────────────────
-//   起因：R6 的 loopPeakMs 显示【每个 60s 窗口】都有 1.7~31 秒的单轮阻塞，
-//         而 loopMs 只报 58~198ms ⇒ 必须把每一笔阻塞归到具体的取数上。
+// ── 取数逐笔耗时打点（仅 CMP_BUILD=1 生效）───────────────────────────────────
+//   用途：把每一笔网络取数（quote/spark/kline/weather）各自计时打出来，
+//         并给 handleClient / autoBrightness / showWallpaper / renderCurrentMode
+//         加 >=200ms 阈值打点。
+//   ⇒ 判读：把 [T] 行的 ms【求和】塞进同一个 [HB] 窗口 ——
+//       · 能对上 loopPeakMs 的尖峰 ⇒ 嫌疑锁定在那个类型上
+//       · 全加起来还凑不出尖峰    ⇒ 病灶在没打点的别处（绘图/屏刷/WebServer）
 //   ⚠️ 写成【宏】而不是函数：Arduino .ino 会给顶层函数插自动原型，
-//      插错位置就是满屏 "has not been declared"（踩过，见记忆 arduino-ino-auto-prototype-trap）。
-//   ⚠️ 标签用 `[T]`：tools/analyze_longrun.py 用【子串】匹配 `[spark]` 计失败数，
-//      写成 `[T] spark ...` 不含 `[spark]` ⇒ 不会污染那个计数。改标签前先看那个脚本。
+//      插错位置就是满屏 "has not been declared"。
+//   ⚠️ 标签特意用 `[T]` 且不含 `[spark]`：长跑分析脚本用【子串】匹配 `[spark]`
+//      计失败数，写成 `[T] spark ...` 不含该子串 ⇒ 不会污染那个计数。
 #if CMP_BUILD
   #define T_FETCH(kind, sym, call) do {                     \
       unsigned long _t0 = millis();                         \
@@ -148,11 +56,11 @@
   #define T_SLOW_PRINT(label, d)     do { (void)(d); } while (0)
 #endif
 
-// ── 【补丁⑪】/set 确认页的【导航防抖】──────────────────────────────────────────
+// ── 导航防抖（`/set` 确认页 + 控制台首页）────────────────────────────────────
 //   现象（用户实测）：在"已切换到…返回"这个页面上【连点"返回"】⇒ 浏览器弹出
 //     `net::ERR_CONNECTION_RESET`（多数）/ `ERR_CONNECTION_REFUSED`（少数，且可能伴随重启）。
 //   成因链（推断，但每一环都有实测支撑）：
-//     ① 点"返回" = 加载控制台首页 `/`，而首页实测【4997 字节要 3.9~6.6 秒】
+//     ① 点"返回" = 加载控制台首页 `/`，而首页约 5KB，在慢速网络往返下要 3.9~6.6 秒
 //        （它由 48 个 sendContent_P 分块发送；机制候选：分块数 / Nagle+延迟ACK，均未定证）
 //     ② 用户等不及 ⇒ 再点一下 ⇒ 浏览器【取消上一次导航】另起请求
 //     ③ 设备还在给那条被取消的连接写 chunk ⇒ 对它发 RST ⇒ ERR_CONNECTION_RESET
@@ -170,7 +78,7 @@
   "setTimeout(function(){b=0;document.body.style.opacity='';},9000);},true);})();</script>"
 
 // 发一个 HTML 页面并自动挂上防抖脚本（替换 `server.send(200, "text/html; charset=utf-8", X)`）
-// ⚠️ 写成宏而不是函数：绕开 .ino 自动原型陷阱（见记忆 arduino-ino-auto-prototype-trap）
+// ⚠️ 写成宏而不是函数：绕开 .ino 自动原型陷阱
 #define SEND_PAGE(body) do { \
     String _pg = body; \
     _pg += NAV_GUARD_JS; \
@@ -223,7 +131,7 @@ String stockCode       = "sh600519";
 int    brightness      = 50;
 bool   autoBrightness  = false;  // 自动亮度调节开关
 int    defaultMode     = 0;
-int    refreshInterval = 60;  // 【补丁②】原为 5。⚠️ NVS 已有值时本默认不生效 ⇒ 靠 /set?refresh= 对齐
+int    refreshInterval = 60;  // ⚠️ 仅 NVS 无值时生效；NVS 已有值则用存储值 ⇒ 可用 /set?refresh= 对齐
 int    wallpaperMode   = 1;   // 壁纸模式: 0无 1静态 2动态
 int    wallpaperIndex  = 0;   // 静态壁纸索引(0-2)
 
@@ -287,12 +195,12 @@ int stockCurIdx = 0;               // 当前轮播索引
 int stockView = 0;                 // 0=分时图 1=日K图
 unsigned long stockLastRotate = 0;
 
-// ── 【补丁⑧ · 移植自 Pi Hub 版 balance-fix5】取数节流：每股一份戳 + TTL ──────────
+// ── 取数节流：每股一份戳 + TTL ──────────────────────────────────────────────
 //   ★为什么必须【每股一份戳】：全局戳会退化成"只有一只是新的、另外三只永远不更新"
-//     —— 与 INC-003 / 附录20 同一类【周期共振】错误（记忆 periodic-gate-resonance）。
+//     —— 这是一类【周期共振】错误：多个目标共用一个节流戳时相位会锁死。
 //   ★为什么用 TTL 而不是每轮拉：分时线每秒都在动，但**两分钟内的变化肉眼不可辨**；
 //     而每拉一次都要一次完整 TLS 握手（web.ifzq.gtimg.cn 强制 HTTPS）。
-//     New 无 Pi ⇒ 分时只能自己走 TLS ⇒ 这是本固件**最贵**的一次取数。
+//     本版无中转主机 ⇒ 分时只能设备自己走 TLS ⇒ 这是本固件**最贵**的一次取数。
 //
 //   ★可调旋钮★：SPARK_TTL_MS = 分时图多久重新拉一次。
 //     ⚠️ 定 120000 不是拍脑袋，依据是【分时图自己的采样精度】：
@@ -303,8 +211,8 @@ unsigned long stockLastRotate = 0;
 //        ⇒ 120s 只是砍掉这些无用重复；肉眼不可分辨。
 //        ⚠️ 唯一例外：开盘头 48 分钟(cnt<48)抽样几乎逐分钟，右端点确实实时 ⇒
 //           那时 120s 会让右端慢约 1 分钟（≈图上 4 像素）。可接受。
-//     ★若哪天想更保守★：改回 60000UL。但须知【取数率会完全回到补丁前水平】
-//       （每股仍需 60s 一副新图 ⇒ 省不下任何一次 TLS），即移植⑧ 的主要收益归零。
+//     ★若哪天想更保守★：改回 60000UL。但须知【取数率会完全回到未节流时的水平】
+//       （每股仍需 60s 一副新图 ⇒ 省不下任何一次 TLS）。
 #define SPARK_TTL_MS 120000UL                    // 分时图：每股 2 分钟（依据见上）
 #define KLINE_TTL_MS 1800000UL                   // 日K：30 分钟（一天才出一根，给长毫无损失）
 unsigned long sparkStamp[SYMBOL_COUNT] = {0};    // 0 = 从未拉过（首屏必定拉）
@@ -340,7 +248,7 @@ void loadConfig() {
   brightness      = prefs.getInt("brightness", 50);
   autoBrightness  = prefs.getBool("autoBrightness", false);
   defaultMode     = prefs.getInt("defaultMode", 0);
-  refreshInterval = prefs.getInt("refreshInterval", 5);
+  refreshInterval = prefs.getInt("refreshInterval", 60);  // 缺省 60s（与全局默认值一致）
   wallpaperMode   = prefs.getInt("wallpaperMode", 1);
   wallpaperIndex  = prefs.getInt("wallpaperIndex", 0);
 }
@@ -561,8 +469,8 @@ void setupWifi() {
 
 // ---------------- WebServer ----------------
 void handleRoot() {
-  // ⚠️ 原为"chunked 传输，避免拼接大 String" —— 补丁⑫ 推翻了它：拼接反而更快
-  // 【补丁⑫】A方案：整页先拼进一个 String，最后一次性发完
+  // ⚠️ 早期写法是"chunked 传输，避免拼接大 String"，实测发现在本机上拼接反而更快
+  // 故改为：整页先拼进一个 String，最后一次性发完
   //   原写法 = setContentLength(UNKNOWN) + 49 个 sendContent_P 分块。
   //   实测：4997 字节要 3.9~6.6 秒才传完 ⇒ 用户等不及连点 ⇒ 浏览器取消导航 ⇒ RST。
   //   ⚠️ PROGMEM 在 ESP32 上就是普通指针（flash 可直接寻址），所以 PSTR() 能直接 += 进 String。
@@ -572,7 +480,7 @@ void handleRoot() {
 
   // 发送HTML头部（从Flash读取）
   page += (HTML_HEADER);
-  page += (String(NAV_GUARD_JS));   // 【补丁⑪】控制台首页也挂防抖（防连点模式按钮）
+  page += (String(NAV_GUARD_JS));   // 控制台首页也挂防抖（防连点模式按钮）
 
   // 动态内容：当前状态
   char buf[512];  // 增大缓冲区到512字节
@@ -667,14 +575,14 @@ void handleRoot() {
   page += (PSTR("<summary style='color:#fca5a5'>⚠ WiFi 管理</summary>"));
   page += (PSTR("<div class='grid' style='margin-top:12px'>"));
   page += (PSTR("<a href='/change_wifi'><button style='background:#16a34a;color:#fff'>更换 WiFi</button></a>"));
-  page += (PSTR("<button onclick=\"if(confirm('确认重置 WiFi？\\n\\n设备将重启并进入配网模式（AP 热点）。\\n\\n请在设备重启后（约 5 秒），手动连接热点 SmallTV-XXXXXX，再打开 192.168.4.1 重新配网。')){location.href='/reset_wifi'}\" style='background:#dc2626;color:#fff'>重置 WiFi</button>"));
+  page += (PSTR("<button onclick=\"if(confirm('确认重置 WiFi？\\n\\n设备将重启并进入配网模式（AP 热点）。\\n\\n请在设备重启后（约 5 秒），手动连接热点 SDD小电视，再打开 192.168.4.1 重新配网。')){location.href='/reset_wifi'}\" style='background:#dc2626;color:#fff'>重置 WiFi</button>"));
   page += (PSTR("</div>"));
   page += (PSTR("<div class='sub' style='margin-top:8px'>更换: 输入新 WiFi 快速切换<br>重置: 清空配置进 AP 配网模式（保底）</div>"));
   page += (PSTR("</details>"));
 
   // 结束标签
   page += (PSTR("</body></html>"));
-  server.send(200, "text/html; charset=utf-8", page);   // 【补丁⑫】一次发完
+  server.send(200, "text/html; charset=utf-8", page);   // 一次发完
 }
 
 void handleSet() {
@@ -772,9 +680,7 @@ void handleSet() {
     }
     return;
   }
-  // 股票刷新间隔 —— 【补丁③】新增（原版只能进配网门户改）
-  // 加这条的唯一理由：让"把 New 也设成 60s"这个测试前提【可保证】。
-  // 没有它，两边 refreshInterval 可能不同 ⇒ 对比失去意义（变量未控住）。
+  // 股票刷新间隔 —— 可直接在网页设定（早期只能进配网门户改）。
   if (server.hasArg("refresh")) {
     int ri = server.arg("refresh").toInt();
     if (ri >= 5 && ri <= 600) {
@@ -782,7 +688,7 @@ void handleSet() {
       prefs.putInt("refreshInterval", ri);
       char b2[192];
       snprintf(b2, sizeof(b2),
-               "股票刷新间隔已设为 <b>%d 秒</b>（每只股票 %.2f 秒取一次）  <a href='/'>返回</a>",
+               "行情刷新间隔已设为 <b>%d 秒</b>（每 %.2f 秒轮询一只标的）  <a href='/'>返回</a>",
                ri, ri / (float)SYMBOL_COUNT);
       SEND_PAGE( b2);
     } else {
@@ -963,11 +869,11 @@ void handleResetWiFi() {
     "<html><body style='font-family:sans-serif;background:#1a1a2e;color:#eee;text-align:center;padding:40px'>"
     "<h3>WiFi 配置已清除</h3>"
     "<p>设备将在 2 秒后重启并进入配网模式（AP 热点）</p>"
-    "<p style='color:#fbbf24;margin-top:20px'>请在设备重启后（约 5 秒），手动连接热点<br><strong>SmallTV-XXXXXX</strong><br>再打开 <strong>192.168.4.1</strong> 重新配网</p>"
+    "<p style='color:#fbbf24;margin-top:20px'>请在设备重启后（约 5 秒），手动连接热点<br><strong>SDD小电视</strong><br>再打开 <strong>192.168.4.1</strong> 重新配网</p>"
     "</body></html>");
   delay(2000);
-  prefs.clear();                // 清除所有 NVS 配置（包括 WiFi）
-  WiFi.disconnect(true, true);  // 断开并清除 WiFi 凭据
+  prefs.clear();                // 清除本固件的 Preferences 命名空间（自选股/城市/亮度等）
+  WiFi.disconnect(true, true);  // ⚠️ WiFi 凭据不在 Preferences 里，由这一行擦除（第2个 true = eraseap）
   delay(100);
   ESP.restart();
 }
@@ -1376,7 +1282,7 @@ bool httpsGet10(const String& url, String& out) {
   }
   client.stop();
 
-  // ── 【补丁⑦ · 移植自 Pi Hub 版 balance-fix5】找 JSON 起点，裁掉前面的垃圾 ──────
+  // ── 找 JSON 起点，裁掉前面的垃圾 ──────────────────────────────────────────
   //   现象：上面那个"跳过响应头"的循环【并不可靠】—— 实测字符串里仍带着 HTTP 头，
   //         于是 deserializeJson 直接报 InvalidInput。
   //   为什么不去追根因：要追得烧一轮固件去试，而**这个兜底本来就该存在** ——
@@ -1514,7 +1420,7 @@ void drawWeather() {
 void renderWeather() {
   static unsigned long lastFetch = 0;
   if (!w.ok || millis() - lastFetch >= 600000UL) {   // 首次或10分钟刷新
-    // 【补丁⑩】天气取数逐次耗时（这里要返回值，T_FETCH 那个宏是 do/while 不能当表达式 ⇒ 展开写）
+    // 天气取数逐次耗时（这里要返回值，T_FETCH 那个宏是 do/while 不能当表达式 ⇒ 展开写）
     unsigned long _tw  = millis();
     bool          _wok = fetchWeather();
     Serial.printf("[T] weather - %lums ok=%d\n", millis() - _tw, (int)_wok);
@@ -1667,10 +1573,10 @@ void drawQuote(int idx, bool full) {
 void renderStock() {
   unsigned long now = millis();
 
-  // ⚠️⚠️ 【本课题铁律】一轮 loop() 最多 1 次取数（PERFORMANCE.md 附录20 §2）。
+  // ⚠️⚠️ 【本固件的硬约束】一轮 loop() 最多 1 次取数。
   //   依据（实测）：明文 HTTP 行情 ~0.2s，TLS 分时/日K ~1.5~2s。
-  //   New 原版在**同一轮**里 quote+spark(+kline) 连拉 2~3 次 ⇒ 最坏单轮 4s+
-  //   —— 这正是"快速切换模式时卡顿"的来源，也正是 5ad7843→2abda5d 那次回归的成因。
+  //   未节流时在**同一轮**里 quote+spark(+kline) 连拉 2~3 次 ⇒ 最坏单轮 4s+
+  //   —— 这正是"快速切换模式时卡顿"的来源。
   //   ⇒ 任何新增的取数都必须先检查 didFetch，绝不能直接往轮播块里加。
   bool didFetch = false;
 
@@ -1697,30 +1603,30 @@ void renderStock() {
     int i = stockCurIdx;
     if (klineStamp[i] == 0 || now - klineStamp[i] >= KLINE_TTL_MS) {
       if (!didFetch) {
-        T_FETCH("kline", SYMBOLS[i].code, fetchKline(SYMBOLS[i].code, quotes[i]));   // 【补丁⑩】
-        klineStamp[i] = now;   // ★尝试即推进：失败也等 TTL，否则失败⇒每轮重试⇒重试风暴(INC-001)
+        T_FETCH("kline", SYMBOLS[i].code, fetchKline(SYMBOLS[i].code, quotes[i]));
+        klineStamp[i] = now;   // ★尝试即推进：失败也等 TTL，否则失败⇒每轮重试⇒重试风暴
         didFetch = true;
       }
     }
   }
 
   // ── ② 分时图（独立闸门）──────────────────────────────────────────────────
-  //   New 无 Pi ⇒ 分时【只能】自己走 TLS 拉（不像 Pi Hub 版是随 quote 免费回来的）
+  //   本版无中转主机 ⇒ 分时【只能】设备自己走 TLS 拉
   //   ⇒ 用 TTL 把它压下来。
   //
-  //   ⚠️⚠️ 【2026-09-17 两轮实测修正 —— 两个错误的记法都记在这】
-  //   错法①（R7 实测否定）：跟 `stockCurIdx`（当前显示股）走 —— 它每 5 秒一跳，
+  //   ⚠️⚠️ 【两条错路都记在这，别再走】
+  //   错法①（实测否定）：跟 `stockCurIdx`（当前显示股）走 —— 它每 5 秒一跳，
   //       跟 120s 的 TTL 不同源 ⇒ 相位不可控 ⇒ 4 笔 spark 挤在 25 秒内。
-  //   错法②（R8 实测否定）：改跟 `refreshIdx` 走 —— 但那个闸门【15 秒一格、60 秒走完 4 只】，
+  //   错法②（实测否定）：改跟 `refreshIdx` 走 —— 但那个闸门【15 秒一格、60 秒走完 4 只】，
   //       4 只股的相位间隔只有 15s，而 TTL=120s ⇒ 到达点全落在 45 秒的窗口里，照样成批。
-  //       实测（R8）：spark 相邻间隔中位 15s、平均 30.6s，**31~60s 的间隔 0 次** ⇒ 就是"批量+空窗"。
+  //       实测：spark 相邻间隔中位 15s、平均 30.6s，**31~60s 的间隔 0 次** ⇒ 就是"批量+空窗"。
   //
   //   ★正解★：闸门周期必须 = `SPARK_TTL_MS / SYMBOL_COUNT`，并配【只属于分时的】独立索引。
   //     ⇒ TTL 恰好 = SYMBOL_COUNT 个闸门周期 ⇒ 每只股每 4 个周期才到点，相位天然均匀错开。
   //       推演：闸门 t=0/30/60/90/120…，索引 0/1/2/3/0… ⇒ 首轮盖满 4 只，
   //       之后每只每 120s 到点一次，落点 0/30/60/90 ⇒ **均匀每 30 秒一笔**。
   //     ⚠️ 这是"周期共振"的【正用】：让 TTL 恰好是【整数个】闸门周期。
-  //        反用（要避免的）是让闸门周期与目标个数锁相 —— 见记忆 periodic-gate-resonance。
+  //        反用（要避免的）是让闸门周期与目标个数锁相。
   {
     static unsigned long lastSparkGate = 0;
     static int           sparkIdx       = 0;
@@ -1728,7 +1634,7 @@ void renderStock() {
       if (!didFetch) {
         int i = sparkIdx;
         if (sparkStamp[i] == 0 || now - sparkStamp[i] >= SPARK_TTL_MS) {
-          T_FETCH("spark", SYMBOLS[i].code, fetchSpark(SYMBOLS[i].code, quotes[i]));   // 【补丁⑩】
+          T_FETCH("spark", SYMBOLS[i].code, fetchSpark(SYMBOLS[i].code, quotes[i]));
           sparkStamp[i] = now;   // ★尝试即推进（同上）
           didFetch = true;
         }
@@ -1744,14 +1650,14 @@ void renderStock() {
 
   // ── ③ 行情轮询（4股轮流）──────────────────────────────────────────────────
   // 每 refreshInterval/SYMBOL_COUNT 秒刷一只（60s/4 ⇒ 15s 一只）
-  // ⚠️ 加 !didFetch 互斥：本轮若已为日K/分时取过数，这次就跳过（保铁律）。
+  // ⚠️ 加 !didFetch 互斥：本轮若已为日K/分时取过数，这次就跳过（保"一轮一次"）。
   //    代价是那一格行情晚 1 个周期 —— 与"切换卡顿"相比不值一提。
   //    ⚠️ lastRefresh 的推进【在互斥之外】：否则被跳过的次数不计入周期，
-  //       行情会被永久饿死（闸门与目标同源 = 锁相，见记忆 periodic-gate-resonance）。
+  //       行情会被永久饿死（闸门与目标同源 = 锁相）。
   static unsigned long lastRefresh = 0;
   if (now - lastRefresh >= (unsigned long)refreshInterval * 1000 / SYMBOL_COUNT) {
     if (!didFetch) {
-      T_FETCH("quote", SYMBOLS[refreshIdx].code, fetchQuote(SYMBOLS[refreshIdx].code, quotes[refreshIdx]));   // 【补丁⑩】
+      T_FETCH("quote", SYMBOLS[refreshIdx].code, fetchQuote(SYMBOLS[refreshIdx].code, quotes[refreshIdx]));
       didFetch = true;
     }
     if (refreshIdx == stockCurIdx) drawQuote(stockCurIdx, false);   // 刷当前股: 增量
@@ -1828,15 +1734,15 @@ void setup() {
   loadConfig();
   setBrightness(brightness);  // 应用从NVS加载的亮度
 
-  // 【补丁④】打印【实际生效】的 refreshInterval —— 烧录后当场核对测试口径
+  // 打印【实际生效】的 refreshInterval —— 烧录后当场核对
   // ⚠️ 必须放在 loadConfig() 之后：refreshInterval 是那里从 NVS 读出来的。
   Serial.println("=====================================================");
 #if CMP_BUILD
-  Serial.printf("[FW] %s  (= NEW 无Pi版 + 埋点 + 移植①httpsGet10兜底 + 移植⑧取数节流)\n", FW_TAG);
+  Serial.printf("[FW] %s  (= 诊断构建)\n", FW_TAG);
 #else
-  Serial.printf("[FW] %s  (= NEW 无Pi版【发布构建】)\n", FW_TAG);
+  Serial.printf("[FW] %s  (= 发布构建)\n", FW_TAG);
 #endif
-  Serial.printf("[FW] 取数节流: didFetch铁律 + sparkTTL=%lus + klineTTL=%lus\n",
+  Serial.printf("[FW] 取数节流: 一轮一次 + sparkTTL=%lus + klineTTL=%lus\n",
                 SPARK_TTL_MS / 1000UL, KLINE_TTL_MS / 1000UL);
 #if CMP_BUILD
   Serial.println("[FW] 心跳新字段: loopPeakMs = 本窗口【单轮最长】耗时（loopMs 是平均值，看不见卡顿）");
@@ -1844,9 +1750,7 @@ void setup() {
 #endif
   Serial.printf("[FW] refreshInterval=%d 秒 ⇒ 每只股票 %.2f 秒取一次 (SYMBOL_COUNT=%d)\n",
                 refreshInterval, refreshInterval / (float)SYMBOL_COUNT, SYMBOL_COUNT);
-  if (refreshInterval != 60) {
-    Serial.println("[FW] ⚠️ 不是 60！请执行: http://<设备IP>/set?refresh=60");
-  }
+  Serial.println("[FW] 提示: 刷新间隔可在网页改，或直接访问 http://<设备IP>/set?refresh=N");
   Serial.println("=====================================================");
 
   // 配网
@@ -1992,7 +1896,7 @@ void setup() {
     }
   });
 
-  // 【补丁⑤】/status —— 只读 JSON，不产生任何取数。
+  // /status —— 只读 JSON，不产生任何取数。
   // ⚠️ 用内联 lambda 而不是新增顶层函数：本项目踩过 Arduino .ino 自动原型陷阱
   //    （在类型定义前新增函数 ⇒ IDE 把自动原型插到那 ⇒ 满屏 "has not been declared"）。
   //    不新增顶层函数 = 完全绕开这个坑。
@@ -2045,13 +1949,13 @@ void setup() {
 }
 
 void loop() {
-  // 【补丁⑥】计数本轮次 —— 供末尾的 [HB] 心跳算 loopMs（与 Pi Hub 版同一算法）
+  // 计数本轮次 —— 供末尾的 [HB] 心跳算 loopMs
   static uint32_t loopCount = 0;
   loopCount++;
 
-  // ── 【补丁⑨】单轮峰值打点 ────────────────────────────────────────────────
+  // ── 单轮峰值打点 ──────────────────────────────────────────────────────────
   //   ⚠️ 起因：loopMs 是【60s 窗口平均值】，对"卡顿"是【瞎的】。
-  //      实证（R5 日志）：有一轮卡了约 17 秒（uptime 1211s → 1288s，本该 +60s），
+  //      实测：有一轮卡了约 17 秒（uptime 1211s → 1288s，本该 +60s），
   //      而摊进窗口平均值只让 loopMs 从 ~60 变成 81 —— **看不出来**。
   //      但用户能感知的恰恰是这个尖峰。⇒ 必须单独记【本窗口内单轮最长耗时】。
   //
@@ -2060,7 +1964,7 @@ void loop() {
   static unsigned long loopPeakMs = 0;
   unsigned long tBody = millis();
 
-  // 【补丁⑩】把 loop 体的各阶段也打上点 —— 否则 loopPeakMs 的尖峰归不到任何一笔上，
+  // 把 loop 体的各阶段也打上点 —— 否则 loopPeakMs 的尖峰归不到任何一笔上，
   //   就说不清"是取数卡的"还是"别的地方卡的"。只打 >=200ms 的。
   {
     unsigned long _t = millis();
@@ -2081,7 +1985,7 @@ void loop() {
   if (wallpaperMode == 2 && (currentMode == MODE_CLOCK || currentMode == MODE_WEATHER)) {
     static unsigned long lastWallRotate = 0;
     if (millis() - lastWallRotate >= 5000UL) {
-      unsigned long _t = millis();   // 【补丁⑩】动态壁纸要解 JPEG，可能是隐藏大户
+      unsigned long _t = millis();   // 动态壁纸要解 JPEG，可能是隐藏大户
       wallpaperIndex = (wallpaperIndex + 1) % 3;
       showWallpaper();
       if (currentMode == MODE_CLOCK) {          // 重叠加时钟
@@ -2097,29 +2001,28 @@ void loop() {
   }
 
   {
-    unsigned long _t = millis();   // 【补丁⑩】整个模式渲染
+    unsigned long _t = millis();   // 整个模式渲染
     renderCurrentMode();
     T_SLOW_PRINT("renderCurrentMode", millis() - _t);
   }
 
-  // 【补丁⑨】收口：累加本窗口的单轮峰值（不含末尾 delay(50)）
+  // 收口：累加本窗口的单轮峰值（不含末尾 delay(50)）
   {
     unsigned long bodyMs = millis() - tBody;
     if (bodyMs > loopPeakMs) loopPeakMs = bodyMs;
   }
 
-  // ── 【补丁⑥】长跑观测心跳（每 60s 一条）—— 只读埋点，不改变任何行为 ──
-  // 格式与 Pi Hub 版【逐字段对齐】，以便复用 tools/analyze_longrun.py：
+  // ── 长跑观测心跳（每 60s 一条）—— 只读埋点，不改变任何行为 ──────────
+  // 字段顺序固定，便于长期观测脚本逐字段解析：
   //   [HB] uptime=%lus loopMs=%u free=%u maxAlloc=%u asyncStackFree=%uB rssi=%d
   //
-  // loopMs 读法（与 Pi Hub 版同一口径）：loop() 末尾有 delay(50) ⇒ 【健康值 ≈ 50 ms】
+  // loopMs 读法：loop() 末尾有 delay(50) ⇒ 【健康值 ≈ 50 ms】
   //   ≈ 50   健康，无额外阻塞       数百  每轮被额外占用（差值 = 阻塞代价）
   //   上千   有重量级阻塞（TLS 握手，单核 C3 上 1~3 秒/次）
   //
-  // ⚠️ asyncStackFree 这一列在本 build 里是【loopTask 的栈余量】，
-  //    不是 AsyncTCP 回调栈（New 用同步 WebServer，没有 AsyncTCP 任务）。
-  //    保留字段名只为让 analyze_longrun.py 的正则匹配得上。
-  //    ⇒ **不要拿这一列与 Pi Hub 版横向比。**
+  // ⚠️ asyncStackFree 这一列装的是【loopTask 的栈余量】，不是 AsyncTCP 回调栈
+  //    （本固件用同步 WebServer，根本没有 AsyncTCP 任务）。字段名是历史沿用，
+  //    保留只为让长期观测脚本的正则匹配得上。
 #if CMP_BUILD
   static unsigned long lastHeartbeat = 0;
   static uint32_t      lastLoopCount = 0;
@@ -2129,7 +2032,7 @@ void loop() {
     uint32_t loopMs = delta ? (uint32_t)(elapsed / delta) : 0;   // 0 = 一轮都没跑，异常
     lastHeartbeat = millis();
     lastLoopCount = loopCount;
-    // ⚠️ 字段【必须追加在末尾】：tools/analyze_longrun.py 的 [HB] 正则是逐字段
+    // ⚠️ 字段【必须追加在末尾】：[HB] 的解析正则是逐字段
     //    前缀匹配（无 $ 锚），追加在后面不影响它匹配；
     //    但插在中间或改字段名会让它【静默失配】。
     Serial.printf("[HB] uptime=%lus loopMs=%u free=%u maxAlloc=%u asyncStackFree=%uB rssi=%d loopPeakMs=%lu\n",
