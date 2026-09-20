@@ -209,18 +209,13 @@ unsigned long stockLastRotate = 0;
 //     本版无中转主机 ⇒ 分时只能设备自己走 TLS ⇒ 这是本固件**最贵**的一次取数。
 //
 //   ★可调旋钮★：SPARK_TTL_MS = 分时图多久重新拉一次。
-//     ⚠️ 定 120000 不是拍脑袋，依据是【分时图自己的采样精度】：
-//        fetchSpark 把腾讯的【逐分钟】数组(≤241点)均匀抽成 SPARK_POINTS=48 个点 ⇒
-//        **屏幕上每个点代表 5 分钟**，最后一个点 = prices[47*cnt/48] ⇒
-//        天生滞后 cnt/48 分钟（11:30 时 2.5 分钟，收盘 5 分钟）。
-//        ⇒ 一天里约 80% 的时间，60 秒刷新中有 4/5 次拉回来的是【逐像素相同】的图。
-//        ⇒ 120s 只是砍掉这些无用重复；肉眼不可分辨。
-//        ⚠️ 唯一例外：开盘头 48 分钟(cnt<48)抽样几乎逐分钟，右端点确实实时 ⇒
-//           那时 120s 会让右端慢约 1 分钟（≈图上 4 像素）。可接受。
-//     ★若哪天想更保守★：改回 60000UL。但须知【取数率会完全回到未节流时的水平】
-//       （每股仍需 60s 一副新图 ⇒ 省不下任何一次 TLS）。
+//     fetchSpark 固定输出 48 点，索引为 floor(i*cnt/48)。采样步长约 cnt/48 条，
+//     接近收盘时约 5 个交易分钟；cnt<48 时会重复采样，相邻间隔可能不同。
+//     最后一点的索引为 floor(47*cnt/48)，不保证包含上游最新记录。
+//     120s 是更新及时性与 TLS 取数开销的取舍；采样步长不能证明两次图像相同。
+//     若缩短为 60000UL，会允许更频繁取数；实际频率仍受调度与网络耗时影响。
 #define SPARK_TTL_MS 120000UL                    // 分时图：每股 2 分钟（依据见上）
-#define KLINE_TTL_MS 1800000UL                   // 日K：30 分钟（一天才出一根，给长毫无损失）
+#define KLINE_TTL_MS 1800000UL                   // 日K：30 分钟；当天蜡烛盘中会变化，存在更新延迟
 unsigned long sparkStamp[SYMBOL_COUNT] = {0};    // 0 = 从未拉过（首屏必定拉）
 unsigned long klineStamp[SYMBOL_COUNT] = {0};
 
@@ -1633,7 +1628,7 @@ void renderStock() {
 
   // ── ① 日K按需（独立闸门）──────────────────────────────────────────────────
   //   ① 只给【当前显示的那一只】拉 —— 正是马上要画的那只
-  //   ② 自带 TTL（每股一份戳）：日K一天才出一根 ⇒ TTL 给长毫无损失
+  //   ② 自带 TTL（每股一份戳）：当天那根盘中一直在变，30 分钟是"及时性 vs 取数开销"的取舍
   //   ③ 受 didFetch 互斥 ⇒ 一轮最多一次取数
   //   【历史】原判据是 `stockView == 1 && refreshIdx == stockCurIdx` ——
   //     两个索引【各自走各自的周期】（15s vs 5s），绝大多数时候对不上
@@ -1787,8 +1782,10 @@ void setup() {
   Serial.println("[FW] 心跳新字段: loopPeakMs = 本窗口【单轮最长】耗时（loopMs 是平均值，看不见卡顿）");
   Serial.println("[FW] 新增逐次取数耗时: [T] <类型> <代码> <ms>ms ok=<0|1>  （≥200ms 的 handleClient/亮度/壁纸也打）");
 #endif
-  Serial.printf("[FW] refreshInterval=%d 秒 ⇒ 每只股票 %.2f 秒取一次 (SYMBOL_COUNT=%d)\n",
-                refreshInterval, refreshInterval / (float)SYMBOL_COUNT, SYMBOL_COUNT);
+  // ⚠️ 措辞别写反：refreshInterval/SYMBOL_COUNT 是【轮询间隔】（每这么久轮一只），
+  //    单只标的名义周期 = 整个 refreshInterval。[T] 日志与 README 的口径要一致。
+  Serial.printf("[FW] refreshInterval=%d 秒 ⇒ 每 %.2f 秒轮询一只，单只名义周期约 %d 秒 (SYMBOL_COUNT=%d)\n",
+                refreshInterval, refreshInterval / (float)SYMBOL_COUNT, refreshInterval, SYMBOL_COUNT);
   Serial.println("[FW] 提示: 刷新间隔可在网页改，或直接访问 http://<设备IP>/set?refresh=N");
   Serial.println("=====================================================");
 
