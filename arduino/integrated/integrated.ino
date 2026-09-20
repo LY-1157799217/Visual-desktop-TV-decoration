@@ -104,9 +104,15 @@
 TFT_eSPI tft = TFT_eSPI();
 Preferences prefs;
 WebServer server(80);
-fs::File fsUploadFile;             // 网页上传文件句柄
+fs::File fsUploadFile;             // 网页上传文件句柄（写的是【临时文件】，见下）
 String uploadError = "";            // 上传错误信息
 bool uploadSuccess = false;         // 上传成功标志
+// ★ 上传采用"写临时文件 → 校验 → 替换"，避免上传中断毁掉设备上原有的文件。
+//   收数据时写 UPLOAD_TMP，只有完整收到并校验通过，才改名成 uploadTargetName。
+#define UPLOAD_TMP        "/upload.tmp"
+#define UPLOAD_MAX_BYTES  512000UL   // 单个文件上限 500KB
+String uploadTargetName = "";        // 本次上传的最终文件名（已过白名单）
+size_t uploadProgress = 0;           // 已写入临时文件的字节数（累计限额 + 完整性校验用）
 
 #define COL_BG   0x0000
 #define COL_TEXT 0xFFFF
@@ -274,7 +280,8 @@ void cleanupSPIFFS() {
   // 遍历可能存在的旧文件并删除（直接尝试删除法，避免遍历API问题）
   const char* OLD_FILES[] = {
     "/4.jpg", "/5.jpg", "/6.jpg", "/7.jpg", "/8.jpg",  // 旧版相册残留
-    "/test.jpg", "/temp.jpg", "/backup.jpg"             // 可能的测试文件
+    "/test.jpg", "/temp.jpg", "/backup.jpg",            // 可能的测试文件
+    UPLOAD_TMP                                          // 上传中断留下的临时文件残片
   };
 
   Serial.println("开始清理SPIFFS...");
@@ -1799,7 +1806,7 @@ void setup() {
   server.on("/wp_select", handleWallpaperSelect);
   server.on("/m.jpg", HTTP_GET, handleImage);
   server.on("/city_data.json", handleCityDataJSON);
-  server.on("/spiffs_list", handleSPIFFSList);  // 临时调试：查看SPIFFS文件列表
+  server.on("/spiffs_list", handleSPIFFSList);  // SPIFFS 存储容量统计（不是文件列表）
   server.on("/upload", handleUploadPage);
   server.on("/stock_edit", handleStockEdit);
   server.on("/stock_save", HTTP_GET, handleStockSave);
@@ -1851,48 +1858,105 @@ void setup() {
         return;
       }
 
-      // 大小限制（单个文件最大500KB）
-      if (upload.totalSize > 512000) {
-        uploadError = "文件过大(最大500KB): " + targetName;
-        Serial.println("拒绝上传: " + uploadError);
-        return;
-      }
+      // ⚠️ 这里【不能】靠 upload.totalSize 判大小：核心在发出 FILE_START **之前**
+      //    就把它显式置 0 了（见核心 WebServer/src/Parsing.cpp：FILE_START 前
+      //    `_currentUpload->totalSize = 0;`，之后才在缓冲区刷写时累加）。
+      //    ⇒ 在这一点上它必然是 0，那种写法是【死代码】。
+      //    所以限额一律由下面 WRITE 分支的【累计字节数 uploadProgress】强制 ——
+      //    那才是真实落盘量，与浏览器是否给出长度无关。
 
+      // ★ 写入临时文件（不是目标文件）—— 收到一半失败时，设备上原有的文件毫发无损。
+      uploadTargetName = targetName;
+      uploadProgress = 0;
       if (fsUploadFile) fsUploadFile.close();
-      fsUploadFile = SPIFFS.open("/" + targetName, "w");
+      SPIFFS.remove(UPLOAD_TMP);          // 清掉上一次可能残留的临时文件
+      fsUploadFile = SPIFFS.open(UPLOAD_TMP, "w");
       if (!fsUploadFile) {
-        uploadError = "无法创建文件: " + targetName;
+        uploadError = "无法创建临时文件";
         Serial.println("上传失败: " + uploadError);
         return;
       }
-      Serial.printf("开始上传: %s\n", targetName.c_str());
+      Serial.printf("开始上传: %s（先写临时文件 %s）\n", targetName.c_str(), UPLOAD_TMP);
 
     } else if (upload.status == UPLOAD_FILE_WRITE) {
       if (uploadError.length() > 0) return;  // 已拒绝，跳过写入
 
       if (fsUploadFile) {
+        // ★ 真正的限额：边收边累计。超过就立刻中止并丢掉临时文件 ——
+        //   即使 upload.totalSize 缺失（=0），也写不爆 SPIFFS。
+        if (uploadProgress + upload.currentSize > UPLOAD_MAX_BYTES) {
+          uploadError = "文件过大(最大500KB)";
+          Serial.println("上传失败: " + uploadError);
+          fsUploadFile.close();
+          SPIFFS.remove(UPLOAD_TMP);
+          return;
+        }
+
         size_t written = fsUploadFile.write(upload.buf, upload.currentSize);
         if (written != upload.currentSize) {
           uploadError = "写入失败";
           Serial.println("上传失败: " + uploadError);
           fsUploadFile.close();
+          SPIFFS.remove(UPLOAD_TMP);       // 丢弃残片，目标文件未被碰过
           return;
         }
+        uploadProgress += written;
       }
 
     } else if (upload.status == UPLOAD_FILE_END) {
       if (uploadError.length() > 0) {
         if (fsUploadFile) fsUploadFile.close();
+        SPIFFS.remove(UPLOAD_TMP);         // 失败路径：不留残片
         return;
       }
 
-      if (fsUploadFile) {
-        fsUploadFile.close();
-        Serial.println("上传成功");
+      if (!fsUploadFile) {
+        uploadError = "文件句柄无效";
+        return;
+      }
+      fsUploadFile.close();
+
+      // 完整性校验：落盘字节数必须等于收到的字节数，否则不替换
+      fs::File chk = SPIFFS.open(UPLOAD_TMP, "r");
+      size_t onDisk = chk ? chk.size() : 0;
+      if (chk) chk.close();
+      if (uploadProgress == 0 || onDisk != uploadProgress) {
+        uploadError = "文件不完整，已放弃";
+        Serial.printf("上传失败: %s (落盘 %u / 收到 %u)\n",
+                      uploadError.c_str(), (unsigned)onDisk, (unsigned)uploadProgress);
+        SPIFFS.remove(UPLOAD_TMP);
+        return;
+      }
+
+      // ★ 替换目标文件。先试直接改名：若这个 SPIFFS 的 rename 支持覆盖已存在文件，
+      //   这一步就是零窗口的；若不支持（返回失败、临时文件原样还在），
+      //   再退化成"先删目标、后改名"。
+      String targetPath = "/" + uploadTargetName;
+      bool ok = SPIFFS.rename(UPLOAD_TMP, targetPath);
+      if (!ok) {
+        Serial.println("（本 SPIFFS 的 rename 不覆盖已存在文件，改用先删后改名）");
+        if (SPIFFS.exists(targetPath)) SPIFFS.remove(targetPath);
+        ok = SPIFFS.rename(UPLOAD_TMP, targetPath);
+      }
+
+      if (ok) {
+        Serial.printf("上传成功: %s (%u 字节)\n",
+                      uploadTargetName.c_str(), (unsigned)uploadProgress);
         uploadSuccess = true;
       } else {
-        uploadError = "文件句柄无效";
+        uploadError = "替换目标文件失败";
+        Serial.println("上传失败: " + uploadError);
+        SPIFFS.remove(UPLOAD_TMP);
       }
+
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+      // ★ 客户端中途断开时，核心【会】回调这个状态（Parsing.cpp 的
+      //   _parseFormUploadAborted）。此时临时文件要丢掉 ——
+      //   目标文件从头到尾没被碰过，所以设备上原有的东西是安全的。
+      if (fsUploadFile) fsUploadFile.close();
+      SPIFFS.remove(UPLOAD_TMP);
+      Serial.printf("上传中止: 连接断开（已收 %u 字节），临时文件已丢弃；目标文件未改动\n",
+                    (unsigned)uploadProgress);
     }
   });
 
