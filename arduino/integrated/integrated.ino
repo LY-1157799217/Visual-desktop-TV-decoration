@@ -277,7 +277,32 @@ void cleanupSPIFFS() {
     "/city_data.json"               // 城市数据
   };
 
-  // 遍历可能存在的旧文件并删除（直接尝试删除法，避免遍历API问题）
+  // ★ 第一步：先把"上次替换中断"救回来 —— 必须早于下面任何删除动作。
+  //   /do_upload 替换一个【已存在】的文件的顺序是：
+  //       目标 → <目标>.bak  ⇒  tmp → 目标  ⇒  删 <目标>.bak
+  //   所以开机时若发现 <目标>.bak：
+  //     · 目标已存在 ⇒ 替换其实已经完成，只是没来得及删备份 ⇒ 删掉 .bak
+  //     · 目标不存在 ⇒ 卡在中间那一步（掉电/改名失败）⇒ 把 .bak 改回来，旧文件救回
+  //   ⚠️ .bak 故意【不】放进下面的 OLD_FILES —— 放进去就等于在恢复之前，
+  //      先把唯一还留着旧数据的那个文件删了。
+  //   ⚠️ 这张表必须与 /do_upload 的 ALLOWED_FILES 一致。
+  const char* BAK_TARGETS[] = {
+    "/1.jpg", "/2.jpg", "/3.jpg", "/m.jpg", "/city_data.json"
+  };
+  for (int i = 0; i < sizeof(BAK_TARGETS) / sizeof(BAK_TARGETS[0]); i++) {
+    String bakPath = String(BAK_TARGETS[i]) + ".bak";
+    if (!SPIFFS.exists(bakPath)) continue;
+    if (SPIFFS.exists(BAK_TARGETS[i])) {
+      SPIFFS.remove(bakPath);
+      Serial.println("替换备份清理: " + bakPath);
+    } else {
+      bool back = SPIFFS.rename(bakPath, BAK_TARGETS[i]);
+      Serial.printf("上次替换中断，恢复 %s ← %s (%s)\n",
+                    BAK_TARGETS[i], bakPath.c_str(), back ? "成功" : "失败，下次开机再试");
+    }
+  }
+
+  // 按【固定名单】删除旧版本遗留文件（直接尝试删除法，避免遍历API问题）
   const char* OLD_FILES[] = {
     "/4.jpg", "/5.jpg", "/6.jpg", "/7.jpg", "/8.jpg",  // 旧版相册残留
     "/test.jpg", "/temp.jpg", "/backup.jpg",            // 可能的测试文件
@@ -574,7 +599,7 @@ void handleRoot() {
   page += (PSTR("<div class='card center'><p>"));
   page += (PSTR("<a href='/upload' style='color:#9ab'>上传图片...</a> &middot; "));
   page += (PSTR("<a href='/stock_edit' style='color:#9ab'>股票配置...</a> &middot; "));
-  page += (PSTR("<a href='/spiffs_list' style='color:#9ab'>SPIFFS文件列表</a></p>"));
+  page += (PSTR("<a href='/spiffs_list' style='color:#9ab'>SPIFFS存储信息</a></p>"));
   page += (PSTR("</div>"));
 
   // WiFi管理折叠区
@@ -808,9 +833,16 @@ void handleUploadPage() {
   html += "function cancelCrop(){document.getElementById('cropModal').style.display='none';if(cropper)cropper.destroy();}";
   html += "function uploadCropped(){if(!cropper){alert('裁剪未就绪');return;}cropper.getCroppedCanvas({width:240,height:240}).toBlob(blob=>{";
   html += "const fd=new FormData();fd.append('fname',curIdx+'.jpg');fd.append('file',blob,curIdx+'.jpg');";
-  html += "document.getElementById('cropModal').style.display='none';document.body.innerHTML='<div style=\"text-align:center;padding:60px;color:#eee\"><h3>上传中...</h3></div>';";
-  html += "fetch('/do_upload',{method:'POST',body:fd}).then(r=>r.text()).then(()=>{});";
-  html += "},'image/jpeg',0.9);}</script>";
+  html += "document.getElementById('cropModal').style.display='none';showUploadMsg('上传中...','#eee');";
+  // ★ 必须把响应显示出来：上传失败时设备返回 400 + 具体原因（超限/不完整/替换失败…）。
+  //   旧写法 .then(r=>r.text()).then(()=>{}) 把响应丢掉了 —— 一旦失败，
+  //   页面会永远停在"上传中..."，用户看不到任何提示。
+  html += "fetch('/do_upload',{method:'POST',body:fd})";
+  html += ".then(r=>r.text()).then(t=>{document.body.innerHTML=t;})";
+  html += ".catch(e=>{showUploadMsg('上传中断: '+(e&&e.message?e.message:e),'#f87171');});";
+  html += "},'image/jpeg',0.9);}";
+  html += "function showUploadMsg(t,c){document.body.innerHTML='<div style=\"text-align:center;padding:60px;background:#1a1a2e;color:#eee;min-height:100vh\"><h3 style=\"color:'+c+'\">'+t+'</h3><p><a href=\"/upload\" style=\"color:#38bdf8\">返回重试</a></p></div>';}";
+  html += "</script>";
   html += "</body></html>";
   server.send(200, "text/html; charset=utf-8", html);
 }
@@ -1019,7 +1051,7 @@ void handleCityList() {
   server.send(200, "text/html; charset=utf-8", html);
 }
 
-// SPIFFS 文件列表(临时调试路由)
+// SPIFFS 存储容量统计（只有一个容量页，不列出文件名）
 void handleSPIFFSList() {
   String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
   html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
@@ -1768,7 +1800,7 @@ void setup() {
 
   // SPIFFS(相册)
   if (!SPIFFS.begin(true)) Serial.println("SPIFFS 挂载失败");
-  cleanupSPIFFS();  // 清理无用文件，保持存储干净
+  cleanupSPIFFS();  // 清理无用文件 + 恢复上次中断的文件替换，保持存储干净
 
   // sprite
   numSpr.setColorDepth(16);
@@ -1883,7 +1915,9 @@ void setup() {
 
       if (fsUploadFile) {
         // ★ 真正的限额：边收边累计。超过就立刻中止并丢掉临时文件 ——
-        //   即使 upload.totalSize 缺失（=0），也写不爆 SPIFFS。
+        //   即使 upload.totalSize 缺失（=0），单文件接收量也超不过 UPLOAD_MAX_BYTES。
+        //   ⚠️ 这不等于"永远写不爆存储"：替换时旧文件与临时文件要同时占位，
+        //      空间不足时写会失败（走上面的失败分支，目标文件不受影响）。
         if (uploadProgress + upload.currentSize > UPLOAD_MAX_BYTES) {
           uploadError = "文件过大(最大500KB)";
           Serial.println("上传失败: " + uploadError);
@@ -1928,24 +1962,47 @@ void setup() {
         return;
       }
 
-      // ★ 替换目标文件。先试直接改名：若这个 SPIFFS 的 rename 支持覆盖已存在文件，
-      //   这一步就是零窗口的；若不支持（返回失败、临时文件原样还在），
-      //   再退化成"先删目标、后改名"。
+      // ★ 替换目标文件。本 SPIFFS 的 rename【不覆盖】已存在文件（实测），
+      //   所以顺序是：  目标 → <目标>.bak  ⇒  tmp → 目标  ⇒  删 <目标>.bak
+      //   —— 任何时候都【不】先删掉目标：
+      //     · 备份失败 ⇒ 目标原样未动，直接放弃
+      //     · 改名失败 ⇒ 立刻把 .bak 改回来（同步回滚）
+      //     · 中途掉电 ⇒ 下次开机 cleanupSPIFFS() 认领 .bak 自动恢复
       String targetPath = "/" + uploadTargetName;
-      bool ok = SPIFFS.rename(UPLOAD_TMP, targetPath);
-      if (!ok) {
-        Serial.println("（本 SPIFFS 的 rename 不覆盖已存在文件，改用先删后改名）");
-        if (SPIFFS.exists(targetPath)) SPIFFS.remove(targetPath);
-        ok = SPIFFS.rename(UPLOAD_TMP, targetPath);
+      String backupPath = targetPath + ".bak";
+      bool ok = false;
+
+      if (SPIFFS.exists(targetPath)) {
+        // 清掉上次可能留下的残备份（加 exists 守卫：本 SPIFFS 的 remove 对
+        // 不存在的文件会往串口打 ERROR，属正常路径上的噪音）
+        if (SPIFFS.exists(backupPath)) SPIFFS.remove(backupPath);
+        if (!SPIFFS.rename(targetPath, backupPath)) {
+          uploadError = "备份旧文件失败，已放弃上传";
+          Serial.println("上传失败: " + uploadError + "（旧文件未改动）");
+          SPIFFS.remove(UPLOAD_TMP);
+          return;
+        }
       }
 
+      // 此时目标名一定不存在（要么本来就没有，要么已改名为 .bak）
+      ok = SPIFFS.rename(UPLOAD_TMP, targetPath);
+
       if (ok) {
+        if (SPIFFS.exists(backupPath)) SPIFFS.remove(backupPath);  // 成功才清备份
         Serial.printf("上传成功: %s (%u 字节)\n",
                       uploadTargetName.c_str(), (unsigned)uploadProgress);
         uploadSuccess = true;
       } else {
         uploadError = "替换目标文件失败";
-        Serial.println("上传失败: " + uploadError);
+        if (SPIFFS.exists(backupPath)) {
+          // 回滚：目标名此刻不存在，所以这一步应当能成
+          bool rb = SPIFFS.rename(backupPath, targetPath);
+          Serial.printf("上传失败: %s；旧文件回滚%s（备份 %s）\n", uploadError.c_str(),
+                        rb ? "成功" : "失败，备份留在设备上，下次开机会自动恢复",
+                        backupPath.c_str());
+        } else {
+          Serial.println("上传失败: " + uploadError + "（本次上传的是新文件，无旧文件需回滚）");
+        }
         SPIFFS.remove(UPLOAD_TMP);
       }
 
