@@ -4,7 +4,7 @@
 > - **只想让股票屏正常工作** → 不用管这里，回 [根目录 README](../README.md) 就够了。
 > - **屏幕黑屏 / 主工程烧完启动就崩**，想判断"到底是硬件接线还是软件配置" → 看下面「怎么用」。
 > - **你只用 Arduino IDE、也不想装 PlatformIO** → 走更省事的那条：
->   [`test_display/test_display.ino`](../test_display/test_display.ino)（纯色轮播）。
+>   [`test_display/test_display.ino`](../test_display/test_display.ino)（依次显示纯色，最后停留白屏）。
 >   代价是它**只测纯色、测不出"缺字体"**，所以本工程仍有存在价值。
 > - **打算自己改引脚、改字体、大改固件** → 看「显示配置在哪」和「改引脚 / 改字体」。
 >
@@ -29,7 +29,7 @@ Display OK!
 | 你看到 | 结论 |
 |---|---|
 | 三行字（红绿蓝闪一下是正常的） | **屏、背光、SPI 接线、引脚配置全都是对的** ⇒ 问题一定在软件/配置侧 |
-| 只有背光亮、纯黑 | ⚠️ **还不能断定是硬件坏了** ⇒ 先查：① 供电与接线（见[根 README「第零步」](../README.md)）② **本工程自己的显示配置** —— ⚠️ **本工程不看库目录的 `User_Setup.h`**（定义了 `USER_SETUP_LOADED`，TFT_eSPI 会整个跳过它），**真正生效的是 [platformio.ini](platformio.ini) 的 `build_flags`**，见下面「显示配置在哪」 ③ 串口启动日志有没有报错。**（库目录 `User_Setup.h` 那一套只对 Arduino IDE 的主工程适用。）** |
+| 只有背光亮、纯黑 | **还不能断定是硬件坏了**。依次检查：① 供电与接线（见[根 README「第零步」](../README.md)）② [platformio.ini](platformio.ini) 的 `build_flags`，包括强制包含的兼容修正文件 ③ 串口启动日志。本工程定义了 `USER_SETUP_LOADED`，不读取库内 `User_Setup.h`；该文件用于 Arduino IDE 的主工程及 `test_display`。 |
 | 连背光都不亮 | 供电/背光脚问题 |
 
 ### ⚠️ 它不会动你的设备数据
